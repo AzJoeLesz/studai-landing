@@ -21,11 +21,7 @@ export default function Home() {
       password
     });
 
-    if (error) {
-      setMessage(error.message);
-    } else {
-      setMessage("Account created. Check your email if confirmation is enabled.");
-    }
+    setMessage(error ? error.message : "Account created. You can now log in.");
   }
 
   async function signIn() {
@@ -36,44 +32,45 @@ export default function Home() {
       password
     });
 
-    if (error) {
-      setMessage(error.message);
-    } else {
-      setMessage("Logged in successfully.");
-    }
+    setMessage(error ? error.message : "Logged in successfully.");
   }
 
   return (
     <main style={styles.page}>
-      <section style={styles.card}>
-        <h1 style={styles.logo}>Stud<span style={{ color: "#8b5cf6" }}>AI</span></h1>
-        <h2>Login test</h2>
+      <div style={styles.overlay}>
+        <section style={styles.card}>
+          <h1 style={styles.logo}>
+            Stud<span style={{ color: "#8b5cf6" }}>AI</span>
+          </h1>
 
-        <input
-          style={styles.input}
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
+          <h2>Login test</h2>
 
-        <input
-          style={styles.input}
-          placeholder="Password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+          <input
+            style={styles.input}
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
 
-        <button style={styles.button} onClick={signUp}>
-          Create account
-        </button>
+          <input
+            style={styles.input}
+            placeholder="Password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
 
-        <button style={styles.secondaryButton} onClick={signIn}>
-          Log in
-        </button>
+          <button style={styles.button} onClick={signUp}>
+            Create account
+          </button>
 
-        <p style={styles.message}>{message}</p>
-      </section>
+          <button style={styles.secondaryButton} onClick={signIn}>
+            Log in
+          </button>
+
+          <p style={styles.message}>{message}</p>
+        </section>
+      </div>
     </main>
   );
 }
@@ -81,19 +78,30 @@ export default function Home() {
 const styles = {
   page: {
     minHeight: "100vh",
-    background: "#0b0f19",
+    backgroundImage: "url('/background.png')",
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    backgroundRepeat: "no-repeat",
     color: "white",
+    fontFamily: "Arial, sans-serif"
+  },
+  overlay: {
+    minHeight: "100vh",
+    width: "100%",
+    background: "rgba(5, 10, 20, 0.72)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontFamily: "Arial, sans-serif"
+    padding: "32px"
   },
   card: {
     width: "100%",
     maxWidth: "420px",
     padding: "32px",
     borderRadius: "20px",
-    background: "rgba(255,255,255,0.08)"
+    background: "rgba(0, 0, 0, 0.42)",
+    backdropFilter: "blur(10px)",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.5)"
   },
   logo: {
     fontSize: "36px",
