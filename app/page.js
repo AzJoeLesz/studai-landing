@@ -40,7 +40,16 @@ export default function Home() {
       .eq("id", userId)
       .single();
 
-    if (!error && data) {
+    if (error) {
+      setProfile({
+        first_name: "",
+        last_name: "",
+        display_name: ""
+      });
+      return;
+    }
+
+    if (data) {
       setProfile({
         first_name: data.first_name || "",
         last_name: data.last_name || "",
@@ -52,7 +61,10 @@ export default function Home() {
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setVisibleUser(data.user);
-      if (data.user) loadProfile(data.user.id);
+
+      if (data.user) {
+        loadProfile(data.user.id);
+      }
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
@@ -60,8 +72,19 @@ export default function Home() {
         setIsTransitioning(true);
 
         setTimeout(() => {
-          setVisibleUser(session?.user ?? null);
-          if (session?.user) loadProfile(session.user.id);
+          const currentUser = session?.user ?? null;
+          setVisibleUser(currentUser);
+
+          if (currentUser) {
+            loadProfile(currentUser.id);
+          } else {
+            setProfile({
+              first_name: "",
+              last_name: "",
+              display_name: ""
+            });
+          }
+
           setIsTransitioning(false);
         }, 250);
       }
@@ -97,7 +120,10 @@ export default function Home() {
       password
     });
 
-    showMessage(error ? "Invalid email or password." : "Welcome back.", error ? "error" : "success");
+    showMessage(
+      error ? "Invalid email or password." : "Welcome back.",
+      error ? "error" : "success"
+    );
   }
 
   async function signInWithGoogle() {
@@ -110,20 +136,20 @@ export default function Home() {
       }
     });
 
-    if (error) showMessage(error.message, "error");
+    if (error) {
+      showMessage(error.message, "error");
+    }
   }
 
   async function saveProfile() {
     if (!visibleUser) return;
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        first_name: profile.first_name,
-        last_name: profile.last_name,
-        display_name: profile.display_name
-      })
-      .eq("id", visibleUser.id);
+    const { error } = await supabase.from("profiles").upsert({
+      id: visibleUser.id,
+      first_name: profile.first_name,
+      last_name: profile.last_name,
+      display_name: profile.display_name
+    });
 
     showMessage(
       error ? error.message : "Profile saved.",
@@ -133,7 +159,13 @@ export default function Home() {
 
   async function signOut() {
     await supabase.auth.signOut();
-    setProfile({ first_name: "", last_name: "", display_name: "" });
+
+    setProfile({
+      first_name: "",
+      last_name: "",
+      display_name: ""
+    });
+
     showMessage("Signed out successfully.", "info");
   }
 
@@ -157,7 +189,8 @@ export default function Home() {
             <h2 style={styles.title}>Your profile</h2>
 
             <p style={styles.text}>
-              Add your basic information. Later this will help the tutor personalize explanations.
+              Add your basic information. Later this will help the tutor
+              personalize explanations.
             </p>
 
             <div style={styles.panel}>
@@ -197,7 +230,11 @@ export default function Home() {
               Save profile
             </button>
 
-            <button type="button" style={styles.secondaryButton} onClick={signOut}>
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={signOut}
+            >
               Log out
             </button>
 
@@ -257,7 +294,11 @@ export default function Home() {
               Log in
             </button>
 
-            <button type="button" style={styles.secondaryButton} onClick={signUp}>
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={signUp}
+            >
               Create account
             </button>
 
@@ -267,7 +308,11 @@ export default function Home() {
               <span style={styles.dividerLine}></span>
             </div>
 
-            <button type="button" style={styles.googleButton} onClick={signInWithGoogle}>
+            <button
+              type="button"
+              style={styles.googleButton}
+              onClick={signInWithGoogle}
+            >
               Continue with Google
             </button>
           </form>
