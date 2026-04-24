@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -12,42 +12,110 @@ export default function Home() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setUser(session?.user ?? null);
+      }
+    );
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   async function signUp() {
-    setMessage("Creating account...");
+    setMessage("Creating your account...");
 
     const { error } = await supabase.auth.signUp({
       email,
-      password
+      password,
+      options: {
+        emailRedirectTo: "https://studai.hu"
+      }
     });
 
-    setMessage(error ? error.message : "Account created. You can now log in.");
+    setMessage(
+      error
+        ? error.message
+        : "Account created. Check your email to confirm it."
+    );
   }
 
   async function signIn() {
-    setMessage("Signing in...");
+    setMessage("Signing you in...");
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password
     });
 
-    setMessage(error ? error.message : "Logged in successfully.");
+    setMessage(error ? error.message : "");
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setMessage("Signed out.");
+  }
+
+  if (user) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.overlay}>
+          <section style={styles.dashboard}>
+            <div style={styles.badge}>Logged in</div>
+
+            <h1 style={styles.logo}>
+              Stud<span style={{ color: "#8b5cf6" }}>AI</span>
+            </h1>
+
+            <h2 style={styles.title}>Welcome to your learning space</h2>
+
+            <p style={styles.text}>
+              Your account is working. Next we will connect this page to your
+              student profile, saved sessions, and AI tutor.
+            </p>
+
+            <div style={styles.panel}>
+              <strong>Email:</strong>
+              <br />
+              {user.email}
+            </div>
+
+            <button style={styles.button} onClick={signOut}>
+              Log out
+            </button>
+          </section>
+        </div>
+      </main>
+    );
   }
 
   return (
     <main style={styles.page}>
       <div style={styles.overlay}>
         <section style={styles.card}>
+          <div style={styles.badge}>Prototype access</div>
+
           <h1 style={styles.logo}>
             Stud<span style={{ color: "#8b5cf6" }}>AI</span>
           </h1>
 
-          <h2>Login test</h2>
+          <h2 style={styles.title}>Sign in to continue</h2>
+
+          <p style={styles.text}>
+            Early access to the AI math tutor prototype.
+          </p>
 
           <input
             style={styles.input}
-            placeholder="Email"
+            placeholder="Email address"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -60,15 +128,15 @@ export default function Home() {
             onChange={(e) => setPassword(e.target.value)}
           />
 
-          <button style={styles.button} onClick={signUp}>
-            Create account
-          </button>
-
-          <button style={styles.secondaryButton} onClick={signIn}>
+          <button style={styles.button} onClick={signIn}>
             Log in
           </button>
 
-          <p style={styles.message}>{message}</p>
+          <button style={styles.secondaryButton} onClick={signUp}>
+            Create account
+          </button>
+
+          {message && <p style={styles.message}>{message}</p>}
         </section>
       </div>
     </main>
@@ -88,57 +156,100 @@ const styles = {
   overlay: {
     minHeight: "100vh",
     width: "100%",
-    background: "rgba(5, 10, 20, 0.72)",
+    background:
+      "linear-gradient(135deg, rgba(5,10,20,0.82), rgba(20,10,45,0.68))",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "32px"
+    padding: "24px"
   },
   card: {
     width: "100%",
-    maxWidth: "420px",
-    padding: "32px",
-    borderRadius: "20px",
-    background: "rgba(0, 0, 0, 0.42)",
-    backdropFilter: "blur(10px)",
-    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.5)"
+    maxWidth: "430px",
+    padding: "36px",
+    borderRadius: "28px",
+    background: "rgba(8, 12, 24, 0.74)",
+    backdropFilter: "blur(14px)",
+    boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+    border: "1px solid rgba(255,255,255,0.12)"
+  },
+  dashboard: {
+    width: "100%",
+    maxWidth: "680px",
+    padding: "42px",
+    borderRadius: "30px",
+    background: "rgba(8, 12, 24, 0.76)",
+    backdropFilter: "blur(14px)",
+    boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    textAlign: "center"
+  },
+  badge: {
+    display: "inline-block",
+    padding: "8px 14px",
+    borderRadius: "999px",
+    background: "rgba(139,92,246,0.18)",
+    border: "1px solid rgba(139,92,246,0.45)",
+    color: "#ddd6fe",
+    fontSize: "14px",
+    marginBottom: "18px"
   },
   logo: {
-    fontSize: "36px",
-    marginBottom: "20px"
+    fontSize: "44px",
+    margin: "0 0 14px"
+  },
+  title: {
+    fontSize: "26px",
+    margin: "0 0 10px"
+  },
+  text: {
+    color: "#cbd5e1",
+    lineHeight: 1.5,
+    marginBottom: "24px"
   },
   input: {
     width: "100%",
-    padding: "14px",
-    marginBottom: "12px",
-    borderRadius: "10px",
-    border: "1px solid #333",
-    fontSize: "16px"
+    padding: "15px 16px",
+    marginBottom: "13px",
+    borderRadius: "14px",
+    border: "1px solid rgba(255,255,255,0.18)",
+    fontSize: "16px",
+    outline: "none"
   },
   button: {
     width: "100%",
-    padding: "14px",
+    padding: "15px",
     marginTop: "8px",
-    borderRadius: "10px",
+    borderRadius: "14px",
     border: "none",
-    background: "#8b5cf6",
+    background: "linear-gradient(135deg, #7c3aed, #a855f7)",
     color: "white",
     fontSize: "16px",
+    fontWeight: "700",
     cursor: "pointer"
   },
   secondaryButton: {
     width: "100%",
-    padding: "14px",
-    marginTop: "10px",
-    borderRadius: "10px",
-    border: "1px solid #8b5cf6",
-    background: "transparent",
+    padding: "15px",
+    marginTop: "12px",
+    borderRadius: "14px",
+    border: "1px solid rgba(168,85,247,0.8)",
+    background: "rgba(255,255,255,0.04)",
     color: "white",
     fontSize: "16px",
+    fontWeight: "700",
     cursor: "pointer"
   },
   message: {
-    marginTop: "16px",
-    color: "#cbd5e1"
+    marginTop: "18px",
+    color: "#ddd6fe",
+    lineHeight: 1.4
+  },
+  panel: {
+    padding: "18px",
+    borderRadius: "18px",
+    background: "rgba(255,255,255,0.08)",
+    marginBottom: "22px",
+    color: "#e5e7eb"
   }
 };
