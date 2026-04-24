@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { LogOut } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/card";
 import { StatusMessage } from "@/components/ui/status-message";
 import { Logo } from "@/components/brand/logo";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type StatusType = "info" | "success" | "error";
@@ -40,6 +42,7 @@ const emptyProfile: Profile = {
 const fadeTransition = { duration: 0.25, ease: [0.22, 1, 0.36, 1] as const };
 
 export default function Home() {
+  const t = useTranslations();
   const supabase = getSupabaseBrowserClient();
 
   const [email, setEmail] = useState("");
@@ -108,7 +111,7 @@ export default function Home() {
   async function signIn(e: FormEvent) {
     e.preventDefault();
     setLoadingAction("signIn");
-    showStatus("Bejelentkezés...", "info");
+    showStatus(t("auth.status.signingIn"), "info");
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -117,14 +120,14 @@ export default function Home() {
 
     setLoadingAction(null);
     showStatus(
-      error ? "Hibás e-mail cím vagy jelszó." : "Üdv újra itt.",
+      error ? t("auth.status.invalidCredentials") : t("auth.status.welcomeBack"),
       error ? "error" : "success"
     );
   }
 
   async function signUp() {
     setLoadingAction("signUp");
-    showStatus("Fiók létrehozása...", "info");
+    showStatus(t("auth.status.signingUp"), "info");
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -134,16 +137,14 @@ export default function Home() {
 
     setLoadingAction(null);
     showStatus(
-      error
-        ? error.message
-        : "Fiók létrehozva. Kérlek erősítsd meg az e-mail címed.",
+      error ? error.message : t("auth.status.accountCreated"),
       error ? "error" : "success"
     );
   }
 
   async function signInWithGoogle() {
     setLoadingAction("google");
-    showStatus("Google bejelentkezés megnyitása...", "info");
+    showStatus(t("auth.status.googleOpening"), "info");
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -169,7 +170,7 @@ export default function Home() {
 
     setLoadingAction(null);
     showStatus(
-      error ? error.message : "Profil elmentve.",
+      error ? error.message : t("profile.saved"),
       error ? "error" : "success"
     );
   }
@@ -178,7 +179,7 @@ export default function Home() {
     setLoadingAction("signOut");
     await supabase.auth.signOut();
     setLoadingAction(null);
-    showStatus("Sikeres kijelentkezés.", "info");
+    showStatus(t("auth.status.signedOut"), "info");
   }
 
   if (!ready) {
@@ -191,8 +192,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen">
-      <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
-        <Logo size="sm" />
+      <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-8">
+        <Logo size="md" />
+        <LanguageSwitcher />
       </header>
 
       <div className="mx-auto flex w-full max-w-md flex-col items-stretch px-6 pb-16 pt-8 sm:pt-16">
@@ -207,21 +209,26 @@ export default function Home() {
             >
               <Card>
                 <CardHeader>
-                  <CardTitle>Üdv újra, {profile.display_name || "tanuló"}.</CardTitle>
-                  <CardDescription>
-                    Hamarosan innen érhető el a munkamenetek listája és a beállítások.
-                    Addig is frissítheted az alapadataidat.
-                  </CardDescription>
+                  <CardTitle>
+                    {t("profile.welcome", {
+                      name: profile.display_name || t("profile.fallbackName")
+                    })}
+                  </CardTitle>
+                  <CardDescription>{t("profile.description")}</CardDescription>
                 </CardHeader>
 
                 <CardContent className="flex flex-col gap-4">
                   <div className="rounded-md border border-border bg-muted/50 px-3.5 py-3 text-sm text-muted-foreground">
-                    <span className="text-foreground/60">E-mail: </span>
+                    <span className="text-foreground/60">
+                      {t("profile.emailLabel")}:{" "}
+                    </span>
                     <span className="text-foreground">{user.email}</span>
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="first_name">Keresztnév</Label>
+                    <Label htmlFor="first_name">
+                      {t("profile.firstNameLabel")}
+                    </Label>
                     <Input
                       id="first_name"
                       value={profile.first_name}
@@ -232,7 +239,9 @@ export default function Home() {
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="last_name">Vezetéknév</Label>
+                    <Label htmlFor="last_name">
+                      {t("profile.lastNameLabel")}
+                    </Label>
                     <Input
                       id="last_name"
                       value={profile.last_name}
@@ -243,7 +252,9 @@ export default function Home() {
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="display_name">Megjelenítendő név</Label>
+                    <Label htmlFor="display_name">
+                      {t("profile.displayNameLabel")}
+                    </Label>
                     <Input
                       id="display_name"
                       value={profile.display_name}
@@ -258,7 +269,9 @@ export default function Home() {
                     disabled={loadingAction === "save"}
                     className="mt-2"
                   >
-                    {loadingAction === "save" ? "Mentés..." : "Profil mentése"}
+                    {loadingAction === "save"
+                      ? t("profile.saving")
+                      : t("profile.save")}
                   </Button>
 
                   <Button
@@ -269,7 +282,7 @@ export default function Home() {
                     className="text-muted-foreground"
                   >
                     <LogOut className="h-4 w-4" />
-                    Kijelentkezés
+                    {t("profile.signOut")}
                   </Button>
 
                   {status && (
@@ -290,16 +303,14 @@ export default function Home() {
             >
               <Card>
                 <CardHeader>
-                  <CardTitle>Lépj be a folytatáshoz</CardTitle>
-                  <CardDescription>
-                    Korai hozzáférés az AI matek korrepetitor prototípushoz.
-                  </CardDescription>
+                  <CardTitle>{t("auth.title")}</CardTitle>
+                  <CardDescription>{t("auth.description")}</CardDescription>
                 </CardHeader>
 
                 <CardContent>
                   <form onSubmit={signIn} className="flex flex-col gap-4">
                     <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="email">E-mail cím</Label>
+                      <Label htmlFor="email">{t("auth.emailLabel")}</Label>
                       <Input
                         id="email"
                         type="email"
@@ -311,7 +322,7 @@ export default function Home() {
                     </div>
 
                     <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="password">Jelszó</Label>
+                      <Label htmlFor="password">{t("auth.passwordLabel")}</Label>
                       <Input
                         id="password"
                         type="password"
@@ -327,7 +338,9 @@ export default function Home() {
                       disabled={loadingAction === "signIn"}
                       className="mt-2"
                     >
-                      {loadingAction === "signIn" ? "Bejelentkezés..." : "Bejelentkezés"}
+                      {loadingAction === "signIn"
+                        ? t("auth.signingIn")
+                        : t("auth.signIn")}
                     </Button>
 
                     <Button
@@ -337,14 +350,14 @@ export default function Home() {
                       disabled={loadingAction === "signUp"}
                     >
                       {loadingAction === "signUp"
-                        ? "Fiók létrehozása..."
-                        : "Fiók létrehozása"}
+                        ? t("auth.signingUp")
+                        : t("auth.signUp")}
                     </Button>
 
                     <div className="my-1 flex items-center gap-3">
                       <span className="h-px flex-1 bg-border" />
                       <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                        vagy
+                        {t("auth.or")}
                       </span>
                       <span className="h-px flex-1 bg-border" />
                     </div>
@@ -355,7 +368,7 @@ export default function Home() {
                       onClick={signInWithGoogle}
                       disabled={loadingAction === "google"}
                     >
-                      Folytatás Google-fiókkal
+                      {t("auth.google")}
                     </Button>
                   </form>
 
@@ -371,8 +384,7 @@ export default function Home() {
         </AnimatePresence>
 
         <p className="mt-8 text-center text-xs text-muted-foreground">
-          A StudAI hamarosan többet is tud majd — munkamenetek, beállítások és egy
-          nyugodt, türelmes AI matek korrepetitor.
+          {t("footer.soon")}
         </p>
       </div>
     </main>

@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "title": "StudAI — AI math tutor",
+    "description": "A calm, patient AI math tutor that teaches at your own pace."
+  },
+  "auth": {
+    "title": "Sign in to continue",
+    "description": "Early access to the AI math tutor prototype.",
+    "emailLabel": "Email address",
+    "passwordLabel": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in...",
+    "signUp": "Create account",
+    "signingUp": "Creating account...",
+    "or": "or",
+    "google": "Continue with Google",
+    "status": {
+      "signingIn": "Signing you in...",
+      "signingUp": "Creating your account...",
+      "googleOpening": "Opening Google sign-in...",
+      "welcomeBack": "Welcome back.",
+      "invalidCredentials": "Invalid email or password.",
+      "accountCreated": "Account created. Check your email to confirm it.",
+      "signedOut": "Signed out successfully."
+    }
+  },
+  "profile": {
+    "welcome": "Welcome back, {name}.",
+    "fallbackName": "student",
+    "description": "Soon, this is where you'll access your sessions and settings. For now, you can update your basic info.",
+    "emailLabel": "Email",
+    "firstNameLabel": "First name",
+    "lastNameLabel": "Last name",
+    "displayNameLabel": "Display name",
+    "save": "Save profile",
+    "saving": "Saving...",
+    "saved": "Profile saved.",
+    "signOut": "Sign out"
+  },
+  "footer": {
+    "soon": "StudAI will soon do more — sessions, settings, and a calm, patient AI math tutor."
+  },
+  "language": {
+    "label": "Language",
+    "hu": "Hungarian",
+    "en": "English"
+  }
+}

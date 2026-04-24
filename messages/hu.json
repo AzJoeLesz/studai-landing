@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "title": "StudAI — AI matek korrepetitor",
+    "description": "Egy nyugodt, türelmes AI matek korrepetitor, ami a saját tempódban tanít."
+  },
+  "auth": {
+    "title": "Lépj be a folytatáshoz",
+    "description": "Korai hozzáférés az AI matek korrepetitor prototípushoz.",
+    "emailLabel": "E-mail cím",
+    "passwordLabel": "Jelszó",
+    "signIn": "Bejelentkezés",
+    "signingIn": "Bejelentkezés...",
+    "signUp": "Fiók létrehozása",
+    "signingUp": "Fiók létrehozása...",
+    "or": "vagy",
+    "google": "Folytatás Google-fiókkal",
+    "status": {
+      "signingIn": "Bejelentkezés...",
+      "signingUp": "Fiók létrehozása...",
+      "googleOpening": "Google bejelentkezés megnyitása...",
+      "welcomeBack": "Üdv újra itt.",
+      "invalidCredentials": "Hibás e-mail cím vagy jelszó.",
+      "accountCreated": "Fiók létrehozva. Kérlek erősítsd meg az e-mail címed.",
+      "signedOut": "Sikeres kijelentkezés."
+    }
+  },
+  "profile": {
+    "welcome": "Üdv újra, {name}.",
+    "fallbackName": "tanuló",
+    "description": "Hamarosan innen érhető el a munkamenetek listája és a beállítások. Addig is frissítheted az alapadataidat.",
+    "emailLabel": "E-mail",
+    "firstNameLabel": "Keresztnév",
+    "lastNameLabel": "Vezetéknév",
+    "displayNameLabel": "Megjelenítendő név",
+    "save": "Profil mentése",
+    "saving": "Mentés...",
+    "saved": "Profil elmentve.",
+    "signOut": "Kijelentkezés"
+  },
+  "footer": {
+    "soon": "A StudAI hamarosan többet is tud majd — munkamenetek, beállítások és egy nyugodt, türelmes AI matek korrepetitor."
+  },
+  "language": {
+    "label": "Nyelv",
+    "hu": "Magyar",
+    "en": "Angol"
+  }
+}
