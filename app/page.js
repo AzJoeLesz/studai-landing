@@ -11,17 +11,38 @@ const supabase = createClient(
 export default function Home() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState("info");
+
   const [user, setUser] = useState(null);
+  const [visibleUser, setVisibleUser] = useState(null);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
+  function showMessage(text, type = "info") {
+    setMessage(text);
+    setMessageType(type);
+
+    setTimeout(() => {
+      setMessage("");
+    }, 3500);
+  }
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setUser(data.user);
+      setVisibleUser(data.user);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        setUser(session?.user ?? null);
+        setIsTransitioning(true);
+
+        setTimeout(() => {
+          setUser(session?.user ?? null);
+          setVisibleUser(session?.user ?? null);
+          setIsTransitioning(false);
+        }, 250);
       }
     );
 
@@ -31,7 +52,7 @@ export default function Home() {
   }, []);
 
   async function signUp() {
-    setMessage("Creating your account...");
+    showMessage("Creating your account...", "info");
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -41,34 +62,44 @@ export default function Home() {
       }
     });
 
-    setMessage(
-      error
-        ? error.message
-        : "Account created. Check your email to confirm it."
-    );
+    if (error) {
+      showMessage(error.message, "error");
+    } else {
+      showMessage("Account created. Check your email to confirm it.", "success");
+    }
   }
 
   async function signIn() {
-    setMessage("Signing you in...");
+    showMessage("Signing you in...", "info");
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password
     });
 
-    setMessage(error ? error.message : "");
+    if (error) {
+      showMessage("Invalid email or password.", "error");
+    } else {
+      showMessage("Welcome back.", "success");
+    }
   }
 
   async function signOut() {
     await supabase.auth.signOut();
-    setMessage("Signed out.");
+    showMessage("Signed out successfully.", "info");
   }
 
-  if (user) {
+  if (visibleUser) {
     return (
       <main style={styles.page}>
         <div style={styles.overlay}>
-          <section style={styles.dashboard}>
+          <section
+            style={{
+              ...styles.dashboard,
+              opacity: isTransitioning ? 0 : 1,
+              transform: isTransitioning ? "translateY(10px)" : "translateY(0)"
+            }}
+          >
             <div style={styles.badge}>Logged in</div>
 
             <h1 style={styles.logo}>
@@ -85,12 +116,18 @@ export default function Home() {
             <div style={styles.panel}>
               <strong>Email:</strong>
               <br />
-              {user.email}
+              {visibleUser.email}
             </div>
 
             <button style={styles.button} onClick={signOut}>
               Log out
             </button>
+
+            {message && (
+              <p style={{ ...styles.message, ...styles[messageType] }}>
+                {message}
+              </p>
+            )}
           </section>
         </div>
       </main>
@@ -100,7 +137,13 @@ export default function Home() {
   return (
     <main style={styles.page}>
       <div style={styles.overlay}>
-        <section style={styles.card}>
+        <section
+          style={{
+            ...styles.card,
+            opacity: isTransitioning ? 0 : 1,
+            transform: isTransitioning ? "translateY(10px)" : "translateY(0)"
+          }}
+        >
           <div style={styles.badge}>Prototype access</div>
 
           <h1 style={styles.logo}>
@@ -109,9 +152,7 @@ export default function Home() {
 
           <h2 style={styles.title}>Sign in to continue</h2>
 
-          <p style={styles.text}>
-            Early access to the AI math tutor prototype.
-          </p>
+          <p style={styles.text}>Early access to the AI math tutor prototype.</p>
 
           <input
             style={styles.input}
@@ -136,7 +177,11 @@ export default function Home() {
             Create account
           </button>
 
-          {message && <p style={styles.message}>{message}</p>}
+          {message && (
+            <p style={{ ...styles.message, ...styles[messageType] }}>
+              {message}
+            </p>
+          )}
         </section>
       </div>
     </main>
@@ -171,7 +216,8 @@ const styles = {
     background: "rgba(8, 12, 24, 0.74)",
     backdropFilter: "blur(14px)",
     boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
-    border: "1px solid rgba(255,255,255,0.12)"
+    border: "1px solid rgba(255,255,255,0.12)",
+    transition: "opacity 250ms ease, transform 250ms ease"
   },
   dashboard: {
     width: "100%",
@@ -182,7 +228,8 @@ const styles = {
     backdropFilter: "blur(14px)",
     boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
     border: "1px solid rgba(255,255,255,0.12)",
-    textAlign: "center"
+    textAlign: "center",
+    transition: "opacity 250ms ease, transform 250ms ease"
   },
   badge: {
     display: "inline-block",
@@ -208,7 +255,9 @@ const styles = {
     marginBottom: "24px"
   },
   input: {
+    display: "block",
     width: "100%",
+    boxSizing: "border-box",
     padding: "15px 16px",
     marginBottom: "13px",
     borderRadius: "14px",
@@ -217,7 +266,9 @@ const styles = {
     outline: "none"
   },
   button: {
+    display: "block",
     width: "100%",
+    boxSizing: "border-box",
     padding: "15px",
     marginTop: "8px",
     borderRadius: "14px",
@@ -229,7 +280,9 @@ const styles = {
     cursor: "pointer"
   },
   secondaryButton: {
+    display: "block",
     width: "100%",
+    boxSizing: "border-box",
     padding: "15px",
     marginTop: "12px",
     borderRadius: "14px",
@@ -242,8 +295,26 @@ const styles = {
   },
   message: {
     marginTop: "18px",
-    color: "#ddd6fe",
-    lineHeight: 1.4
+    padding: "12px 14px",
+    borderRadius: "14px",
+    lineHeight: 1.4,
+    fontSize: "14px",
+    animation: "fadeIn 200ms ease"
+  },
+  success: {
+    color: "#bbf7d0",
+    background: "rgba(22, 163, 74, 0.18)",
+    border: "1px solid rgba(34, 197, 94, 0.35)"
+  },
+  error: {
+    color: "#fecaca",
+    background: "rgba(220, 38, 38, 0.18)",
+    border: "1px solid rgba(248, 113, 113, 0.35)"
+  },
+  info: {
+    color: "#dbeafe",
+    background: "rgba(37, 99, 235, 0.16)",
+    border: "1px solid rgba(96, 165, 250, 0.35)"
   },
   panel: {
     padding: "18px",
