@@ -24,18 +24,29 @@
       "signedOut": "Sikeres kijelentkezés."
     }
   },
-  "profile": {
-    "welcome": "Üdv újra, {name}.",
-    "fallbackName": "tanuló",
-    "description": "Hamarosan innen érhető el a munkamenetek listája és a beállítások. Addig is frissítheted az alapadataidat.",
-    "emailLabel": "E-mail",
-    "firstNameLabel": "Keresztnév",
-    "lastNameLabel": "Vezetéknév",
+  "nav": {
+    "sessions": "Munkamenetek",
+    "settings": "Beállítások",
+    "signOut": "Kijelentkezés",
+    "openMenu": "Menü megnyitása",
+    "closeMenu": "Menü bezárása"
+  },
+  "sessions": {
+    "title": "Munkamenetek",
+    "description": "Itt jelennek majd meg a korábbi beszélgetéseid az AI korrepetitorral.",
+    "newSession": "Új munkamenet",
+    "emptyTitle": "Még nincs munkameneted",
+    "emptyDescription": "Hamarosan indíthatsz beszélgetést az AI matek korrepetitorral. Még dolgozunk rajta."
+  },
+  "settings": {
+    "title": "Beállítások",
+    "description": "A megjelenítendő neved — így szólít majd az AI korrepetitor.",
     "displayNameLabel": "Megjelenítendő név",
-    "save": "Profil mentése",
+    "displayNamePlaceholder": "Ahogy hívnak",
+    "save": "Mentés",
     "saving": "Mentés...",
-    "saved": "Profil elmentve.",
-    "signOut": "Kijelentkezés"
+    "saved": "Beállítások elmentve.",
+    "loadError": "Nem sikerült betölteni a beállításokat."
   },
   "footer": {
     "soon": "A StudAI hamarosan többet is tud majd — munkamenetek, beállítások és egy nyugodt, türelmes AI matek korrepetitor."

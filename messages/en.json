@@ -24,18 +24,29 @@
       "signedOut": "Signed out successfully."
     }
   },
-  "profile": {
-    "welcome": "Welcome back, {name}.",
-    "fallbackName": "student",
-    "description": "Soon, this is where you'll access your sessions and settings. For now, you can update your basic info.",
-    "emailLabel": "Email",
-    "firstNameLabel": "First name",
-    "lastNameLabel": "Last name",
+  "nav": {
+    "sessions": "Sessions",
+    "settings": "Settings",
+    "signOut": "Sign out",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu"
+  },
+  "sessions": {
+    "title": "Sessions",
+    "description": "Your past conversations with the AI tutor will appear here.",
+    "newSession": "New session",
+    "emptyTitle": "No sessions yet",
+    "emptyDescription": "Soon you'll be able to start a conversation with the AI math tutor. We're still building it."
+  },
+  "settings": {
+    "title": "Settings",
+    "description": "Your display name — this is how the AI tutor will address you.",
     "displayNameLabel": "Display name",
-    "save": "Save profile",
+    "displayNamePlaceholder": "What should we call you",
+    "save": "Save",
     "saving": "Saving...",
-    "saved": "Profile saved.",
-    "signOut": "Sign out"
+    "saved": "Settings saved.",
+    "loadError": "Could not load your settings."
   },
   "footer": {
     "soon": "StudAI will soon do more — sessions, settings, and a calm, patient AI math tutor."
