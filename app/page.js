@@ -15,9 +15,14 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
 
-  const [user, setUser] = useState(null);
   const [visibleUser, setVisibleUser] = useState(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
+
+  const [profile, setProfile] = useState({
+    first_name: "",
+    last_name: "",
+    display_name: ""
+  });
 
   function showMessage(text, type = "info") {
     setMessage(text);
@@ -28,10 +33,26 @@ export default function Home() {
     }, 3500);
   }
 
+  async function loadProfile(userId) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("first_name, last_name, display_name")
+      .eq("id", userId)
+      .single();
+
+    if (!error && data) {
+      setProfile({
+        first_name: data.first_name || "",
+        last_name: data.last_name || "",
+        display_name: data.display_name || ""
+      });
+    }
+  }
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      setUser(data.user);
       setVisibleUser(data.user);
+      if (data.user) loadProfile(data.user.id);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
@@ -39,8 +60,8 @@ export default function Home() {
         setIsTransitioning(true);
 
         setTimeout(() => {
-          setUser(session?.user ?? null);
           setVisibleUser(session?.user ?? null);
+          if (session?.user) loadProfile(session.user.id);
           setIsTransitioning(false);
         }, 250);
       }
@@ -62,11 +83,10 @@ export default function Home() {
       }
     });
 
-    if (error) {
-      showMessage(error.message, "error");
-    } else {
-      showMessage("Account created. Check your email to confirm it.", "success");
-    }
+    showMessage(
+      error ? error.message : "Account created. Check your email to confirm it.",
+      error ? "error" : "success"
+    );
   }
 
   async function signIn() {
@@ -77,15 +97,43 @@ export default function Home() {
       password
     });
 
-    if (error) {
-      showMessage("Invalid email or password.", "error");
-    } else {
-      showMessage("Welcome back.", "success");
-    }
+    showMessage(error ? "Invalid email or password." : "Welcome back.", error ? "error" : "success");
+  }
+
+  async function signInWithGoogle() {
+    showMessage("Opening Google sign-in...", "info");
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: "https://studai.hu"
+      }
+    });
+
+    if (error) showMessage(error.message, "error");
+  }
+
+  async function saveProfile() {
+    if (!visibleUser) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        first_name: profile.first_name,
+        last_name: profile.last_name,
+        display_name: profile.display_name
+      })
+      .eq("id", visibleUser.id);
+
+    showMessage(
+      error ? error.message : "Profile saved.",
+      error ? "error" : "success"
+    );
   }
 
   async function signOut() {
     await supabase.auth.signOut();
+    setProfile({ first_name: "", last_name: "", display_name: "" });
     showMessage("Signed out successfully.", "info");
   }
 
@@ -106,11 +154,10 @@ export default function Home() {
               Stud<span style={{ color: "#8b5cf6" }}>AI</span>
             </h1>
 
-            <h2 style={styles.title}>Welcome to your learning space</h2>
+            <h2 style={styles.title}>Your profile</h2>
 
             <p style={styles.text}>
-              Your account is working. Next we will connect this page to your
-              student profile, saved sessions, and AI tutor.
+              Add your basic information. Later this will help the tutor personalize explanations.
             </p>
 
             <div style={styles.panel}>
@@ -119,7 +166,38 @@ export default function Home() {
               {visibleUser.email}
             </div>
 
-            <button style={styles.button} onClick={signOut}>
+            <input
+              style={styles.input}
+              placeholder="First name"
+              value={profile.first_name}
+              onChange={(e) =>
+                setProfile({ ...profile, first_name: e.target.value })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Last name"
+              value={profile.last_name}
+              onChange={(e) =>
+                setProfile({ ...profile, last_name: e.target.value })
+              }
+            />
+
+            <input
+              style={styles.input}
+              placeholder="Display name"
+              value={profile.display_name}
+              onChange={(e) =>
+                setProfile({ ...profile, display_name: e.target.value })
+              }
+            />
+
+            <button type="button" style={styles.button} onClick={saveProfile}>
+              Save profile
+            </button>
+
+            <button type="button" style={styles.secondaryButton} onClick={signOut}>
               Log out
             </button>
 
@@ -154,28 +232,45 @@ export default function Home() {
 
           <p style={styles.text}>Early access to the AI math tutor prototype.</p>
 
-          <input
-            style={styles.input}
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              signIn();
+            }}
+          >
+            <input
+              style={styles.input}
+              placeholder="Email address"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
 
-          <input
-            style={styles.input}
-            placeholder="Password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+            <input
+              style={styles.input}
+              placeholder="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
 
-          <button style={styles.button} onClick={signIn}>
-            Log in
-          </button>
+            <button type="submit" style={styles.button}>
+              Log in
+            </button>
 
-          <button style={styles.secondaryButton} onClick={signUp}>
-            Create account
-          </button>
+            <button type="button" style={styles.secondaryButton} onClick={signUp}>
+              Create account
+            </button>
+
+            <div style={styles.divider}>
+              <span style={styles.dividerLine}></span>
+              <span style={styles.dividerText}>or</span>
+              <span style={styles.dividerLine}></span>
+            </div>
+
+            <button type="button" style={styles.googleButton} onClick={signInWithGoogle}>
+              Continue with Google
+            </button>
+          </form>
 
           {message && (
             <p style={{ ...styles.message, ...styles[messageType] }}>
@@ -221,14 +316,13 @@ const styles = {
   },
   dashboard: {
     width: "100%",
-    maxWidth: "680px",
+    maxWidth: "560px",
     padding: "42px",
     borderRadius: "30px",
     background: "rgba(8, 12, 24, 0.76)",
     backdropFilter: "blur(14px)",
     boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
     border: "1px solid rgba(255,255,255,0.12)",
-    textAlign: "center",
     transition: "opacity 250ms ease, transform 250ms ease"
   },
   badge: {
@@ -293,13 +387,41 @@ const styles = {
     fontWeight: "700",
     cursor: "pointer"
   },
+  googleButton: {
+    display: "block",
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "15px",
+    marginTop: "12px",
+    borderRadius: "14px",
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "white",
+    color: "#111827",
+    fontSize: "16px",
+    fontWeight: "700",
+    cursor: "pointer"
+  },
+  divider: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    margin: "18px 0 6px"
+  },
+  dividerLine: {
+    flex: 1,
+    height: "1px",
+    background: "rgba(255,255,255,0.18)"
+  },
+  dividerText: {
+    color: "#94a3b8",
+    fontSize: "14px"
+  },
   message: {
     marginTop: "18px",
     padding: "12px 14px",
     borderRadius: "14px",
     lineHeight: 1.4,
-    fontSize: "14px",
-    animation: "fadeIn 200ms ease"
+    fontSize: "14px"
   },
   success: {
     color: "#bbf7d0",
