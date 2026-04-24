@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * StudAI design tokens
+ * -----------------------------------------------------------------------------
+ * Changing the identity of the product = changing this file.
+ * Colors are in HSL (without hsl(), so Tailwind can compose with opacity).
+ * Everything else — components, pages, features — reads from these variables.
+ */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --background: 36 33% 97%;          /* warm off-white #FAF7F2 */
+    --foreground: 24 14% 12%;          /* warm near-black */
+
+    --card: 0 0% 100%;
+    --card-foreground: 24 14% 12%;
+
+    --muted: 36 22% 93%;
+    --muted-foreground: 24 8% 42%;
+
+    --accent: 36 25% 90%;
+    --accent-foreground: 24 14% 12%;
+
+    /* Brand — violet (kept intentionally; easy to swap here) */
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 36 22% 93%;
+    --secondary-foreground: 24 14% 12%;
+
+    /* Feedback */
+    --success: 152 55% 40%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Lines + focus */
+    --border: 30 10% 87%;
+    --input: 30 10% 87%;
+    --ring: 262 83% 58%;
+
+    /* Shape */
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 24 10% 9%;
+    --foreground: 36 20% 96%;
+
+    --card: 24 10% 11%;
+    --card-foreground: 36 20% 96%;
+
+    --muted: 24 6% 16%;
+    --muted-foreground: 36 10% 65%;
+
+    --accent: 24 6% 18%;
+    --accent-foreground: 36 20% 96%;
+
+    --primary: 262 83% 66%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 24 6% 16%;
+    --secondary-foreground: 36 20% 96%;
+
+    --success: 152 50% 50%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 24 6% 22%;
+    --input: 24 6% 22%;
+    --ring: 262 83% 66%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-serif tracking-tight;
+  }
+}
