@@ -161,29 +161,48 @@ def list_problems_missing_embedding(
 
 def insert_embeddings(
     pairs: Iterable[tuple[UUID, Language, list[float]]],
+    *,
+    chunk_size: int = 100,
 ) -> int:
-    """Bulk insert (problem_id, language, embedding) rows.
+    """Bulk upsert (problem_id, language, embedding) rows.
+
+    Chunks the upsert into batches of `chunk_size` because each row is a
+    1536-dim vector (~6 KB). Sending 1000 rows in one HTTP request was
+    pushing Supabase past its 8s statement timeout (Postgres error 57014).
+    100-row chunks finish well under 1s each.
 
     Existing rows for the same (problem_id, language) are kept (idempotent
-    re-runs are common). Returns the count of newly inserted rows.
+    re-runs are common). Returns the cumulative count of upserted rows.
     """
-    payload = [
-        {
-            "problem_id": str(pid),
-            "language": lang,
-            "embedding": vec,
-        }
-        for pid, lang, vec in pairs
-    ]
-    if not payload:
-        return 0
     sb = get_supabase_client()
-    res = (
-        sb.table("problem_embeddings")
-        .upsert(payload, on_conflict="problem_id,language")
-        .execute()
-    )
-    return len(res.data or [])
+    total = 0
+    buffer: list[dict] = []
+    for pid, lang, vec in pairs:
+        buffer.append(
+            {
+                "problem_id": str(pid),
+                "language": lang,
+                "embedding": vec,
+            }
+        )
+        if len(buffer) >= chunk_size:
+            res = (
+                sb.table("problem_embeddings")
+                .upsert(buffer, on_conflict="problem_id,language")
+                .execute()
+            )
+            total += len(res.data or [])
+            buffer.clear()
+
+    if buffer:
+        res = (
+            sb.table("problem_embeddings")
+            .upsert(buffer, on_conflict="problem_id,language")
+            .execute()
+        )
+        total += len(res.data or [])
+
+    return total
 
 
 def search_problems(
