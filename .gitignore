@@ -43,3 +43,6 @@ backend/.env
 
 # raw datasets — never commit, they belong in the DB
 math_problem_example/
+
+# generated eval reports
+backend/evals/reports/

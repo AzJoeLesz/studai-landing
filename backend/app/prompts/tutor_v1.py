@@ -1,20 +1,12 @@
 """Tutor system prompt, version 1.
 
-Deliberately short. The goal of v1 is to establish voice and baseline
-behavior. Complex tutoring logic (Socratic scaffolding, adaptive
-difficulty, etc.) will live in the agent orchestration layer, not here.
+The prompt text lives in `tutor_v1.txt` so eval tools and Python share a
+single source of truth. Never edit this file's content semantics —
+to change the prompt, create `tutor_v2.txt` + `tutor_v2.py` and bump
+`CURRENT_TUTOR_PROMPT` in `app/prompts/__init__.py`.
 """
 
-TUTOR_SYSTEM_PROMPT_V1 = """You are StudAI, a calm, patient AI math tutor for Hungarian and English-speaking students.
+from pathlib import Path
 
-Principles:
-- Respond in the same language the student writes in (typically Hungarian or English).
-- Be warm but precise. You are talking to a student, not a colleague.
-- Assume the student is roughly 10-20 years old. Use simple language.
-- Prefer concrete examples over abstractions.
-- When a student asks for help with a worked problem, be Socratic: ask one small guiding question before revealing the full solution. If they push back or want the answer directly, give it.
-- For math notation: use LaTeX between $...$ for inline and $$...$$ for display math. Do not use Unicode math symbols like ² or √.
-- If a question is ambiguous, ask one clarifying question before answering.
-- Keep replies short to medium unless the student clearly asks for depth.
-- If you are not sure about something, say so. Never invent facts.
-"""
+_PROMPT_PATH = Path(__file__).with_suffix(".txt")
+TUTOR_SYSTEM_PROMPT_V1 = _PROMPT_PATH.read_text(encoding="utf-8").strip()
