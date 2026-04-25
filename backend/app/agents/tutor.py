@@ -220,15 +220,16 @@ async def run_tutor_turn(
         p = grounding.problem_reference
         o = grounding.openstax_excerpts
         a = grounding.teaching_annotations
-        logger.info(
-            "tutor_grounding | session_id=%s | L1_problem_chars=%d L2_openstax_chars=%d L3_annotations_chars=%d | L1_on=%s L2_on=%s L3_on=%s",
-            session_id,
-            len(p or ""),
-            len(o or ""),
-            len(a or ""),
-            bool(p and p.strip()),
-            bool(o and o.strip()),
-            bool(a and a.strip()),
+        print(
+            "tutor_grounding | "
+            f"session_id={session_id} | "
+            f"L1_problem_chars={len(p or '')} "
+            f"L2_openstax_chars={len(o or '')} "
+            f"L3_annotations_chars={len(a or '')} | "
+            f"L1_on={bool(p and p.strip())} "
+            f"L2_on={bool(o and o.strip())} "
+            f"L3_on={bool(a and a.strip())}",
+            flush=True,
         )
 
     context = _build_context(

@@ -17,7 +17,6 @@ what gives the chat a ChatGPT-like live-typing feel.
 """
 
 import asyncio
-import logging
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -30,7 +29,6 @@ from app.api.deps import CurrentUser
 from app.db import repositories as repo
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -82,13 +80,12 @@ async def chat(payload: ChatRequest, user: CurrentUser) -> StreamingResponse:
     existing = await asyncio.to_thread(repo.list_messages, payload.session_id)
     is_first_turn = not any(m.role == "user" for m in existing)
 
-    # One line per request in Railway / uvicorn logs (we do not log message text).
-    logger.info(
-        "chat stream started | session_id=%s user_id=%s msg_chars=%d first_turn=%s",
-        payload.session_id,
-        user.user_id,
-        len(payload.message),
-        is_first_turn,
+    # One line per request in Railway deploy logs (we do not log message text).
+    print(
+        "chat_stream_started | "
+        f"session_id={payload.session_id} user_id={user.user_id} "
+        f"msg_chars={len(payload.message)} first_turn={is_first_turn}",
+        flush=True,
     )
 
     return StreamingResponse(
