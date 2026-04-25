@@ -172,10 +172,14 @@ def insert_embeddings(
     100-row chunks finish well under 1s each.
 
     Existing rows for the same (problem_id, language) are kept (idempotent
-    re-runs are common). Returns the cumulative count of upserted rows.
+    re-runs are common). Returns the count of rows attempted -- supabase-py's
+    upsert response does not always include rows that were UPDATEd on
+    conflict (vs INSERTed), so counting `res.data` undercounts. Since each
+    chunk either fully succeeds or raises, total-attempted is the right
+    metric here.
     """
     sb = get_supabase_client()
-    total = 0
+    total_attempted = 0
     buffer: list[dict] = []
     for pid, lang, vec in pairs:
         buffer.append(
@@ -186,23 +190,23 @@ def insert_embeddings(
             }
         )
         if len(buffer) >= chunk_size:
-            res = (
+            (
                 sb.table("problem_embeddings")
                 .upsert(buffer, on_conflict="problem_id,language")
                 .execute()
             )
-            total += len(res.data or [])
+            total_attempted += len(buffer)
             buffer.clear()
 
     if buffer:
-        res = (
+        (
             sb.table("problem_embeddings")
             .upsert(buffer, on_conflict="problem_id,language")
             .execute()
         )
-        total += len(res.data or [])
+        total_attempted += len(buffer)
 
-    return total
+    return total_attempted
 
 
 def search_problems(
