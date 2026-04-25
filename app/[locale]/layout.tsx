@@ -6,6 +6,9 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { routing } from "@/i18n/routing";
 
+// KaTeX styles for math rendering inside chat messages.
+import "katex/dist/katex.min.css";
+
 const sans = Inter({
   subsets: ["latin", "latin-ext"],
   variable: "--font-sans",

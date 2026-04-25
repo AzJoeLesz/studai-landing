@@ -103,3 +103,21 @@
     @apply font-serif;
   }
 }
+
+/*
+ * Markdown + KaTeX integration
+ * -----------------------------------------------------------------------------
+ * `katex.min.css` ships with a fixed font size; we let it inherit so math
+ * blends with surrounding text. Block math gets a bit of breathing room.
+ */
+.markdown .katex {
+  font-size: 1em;
+  color: inherit;
+}
+
+.markdown .katex-display {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}

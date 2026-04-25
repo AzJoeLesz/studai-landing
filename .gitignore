@@ -40,3 +40,6 @@ env/
 .mypy_cache/
 .ruff_cache/
 backend/.env
+
+# raw datasets — never commit, they belong in the DB
+math_problem_example/

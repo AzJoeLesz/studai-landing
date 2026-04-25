@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/chat/markdown-content";
 import type { Message } from "@/lib/api/types";
 
 interface MessageBubbleProps {
@@ -14,9 +15,9 @@ interface MessageBubbleProps {
  *  - User messages: right-aligned, soft primary-tinted card
  *  - Assistant messages: left-aligned, plain prose with a small label
  *
- * Markdown / KaTeX rendering is intentionally not added yet — content is
- * rendered as plain text with preserved newlines. We'll layer on
- * react-markdown + KaTeX in a focused pass once the chat is stable.
+ * Both render their content as Markdown + KaTeX. Streaming partial input
+ * (e.g. half-finished `$x^2 + y^...`) is fine — react-markdown ignores the
+ * incomplete math node until it parses; you just see plain text briefly.
  */
 export function MessageBubble({
   message,
@@ -43,13 +44,13 @@ export function MessageBubble({
         </span>
         <div
           className={cn(
-            "rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words",
+            "rounded-2xl px-4 py-3 text-foreground break-words",
             isUser
-              ? "bg-primary/10 text-foreground"
-              : "bg-transparent text-foreground"
+              ? "bg-primary/10"
+              : "bg-transparent"
           )}
         >
-          {message.content}
+          <MarkdownContent>{message.content}</MarkdownContent>
           {isStreaming && (
             <span
               aria-hidden
