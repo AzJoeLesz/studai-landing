@@ -75,6 +75,23 @@ L3 is **ON** only when L1 has at least one problem hit *and* that `problem_id`
 has a row in `problem_annotations` — it is normal for L3 to be OFF for many
 turns if you have not annotated most of the bank.
 
+## Railway: healthcheck failed (deploy: Network, Healthcheck)
+
+The service must **start** and return **200** on `GET /health` within the
+healthcheck window. If the deploy step shows **Healthcheck failure**:
+
+1. In Railway, open the failed deploy → **View logs** and scroll for a Python
+   traceback. Typical causes:
+   - **Missing or invalid environment variables** in the service (required:
+     `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`). If
+     `get_settings()` fails, the app never listens and the probe fails.
+   - **Wrong service root** (e.g. repo root instead of `backend/`) so
+     `uvicorn main:app` cannot import `main`.
+2. After fixing env, **Redeploy**. You can also `curl` your public URL
+   `/health` and `/` once the service is up.
+
+`railway.json` sets a generous healthcheck timeout; the probe path is `/health`.
+
 ## How a chat turn flows
 
 ```

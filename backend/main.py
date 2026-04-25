@@ -24,6 +24,11 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    @app.get("/", tags=["health"])
+    def root() -> dict[str, str]:
+        """Some platforms probe / during deploy; /health is the main check."""
+        return {"status": "ok"}
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
