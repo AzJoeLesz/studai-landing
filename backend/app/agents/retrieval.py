@@ -32,6 +32,8 @@ class GroundingContext:
     problem_reference: str | None = None
     openstax_excerpts: str | None = None
     teaching_annotations: str | None = None
+    problem_hit_ids: tuple[str, ...] = ()
+    annotation_hit_ids: tuple[str, ...] = ()
 
 
 # --- Problem bank -------------------------------------------------------------
@@ -260,17 +262,25 @@ async def build_grounding_context(user_message: str, language: Language) -> Grou
             )
 
     ann_text: str | None = None
+    annotated_ids: list[UUID] = []
     if use_anno and prob_hits:
         ids = [h.id for h in prob_hits]
         by_id: dict[UUID, dict] = await asyncio.to_thread(
             repo.get_annotations_for_problem_ids,
             ids,
         )
+        annotated_ids = [
+            problem_id
+            for problem_id, row in by_id.items()
+            if row.get("payload") is not None
+        ]
         ann_text = format_teaching_annotations(prob_hits, by_id)
 
     return GroundingContext(
         problem_reference=format_reference_solutions(prob_hits) if use_problem else None,
         openstax_excerpts=format_openstax_excerpts(mat_hits) if use_material else None,
         teaching_annotations=ann_text,
+        problem_hit_ids=tuple(str(h.id) for h in prob_hits),
+        annotation_hit_ids=tuple(str(problem_id) for problem_id in annotated_ids),
     )
 

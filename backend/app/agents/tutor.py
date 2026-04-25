@@ -228,7 +228,9 @@ async def run_tutor_turn(
             f"L3_annotations_chars={len(a or '')} | "
             f"L1_on={bool(p and p.strip())} "
             f"L2_on={bool(o and o.strip())} "
-            f"L3_on={bool(a and a.strip())}",
+            f"L3_on={bool(a and a.strip())} | "
+            f"L1_ids={','.join(grounding.problem_hit_ids) or 'none'} "
+            f"L3_annotation_ids={','.join(grounding.annotation_hit_ids) or 'none'}",
             flush=True,
         )
 
