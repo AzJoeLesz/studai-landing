@@ -14,6 +14,7 @@ Design rules for this file:
 """
 
 import asyncio
+import logging
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -22,6 +23,70 @@ from app.db import repositories as repo
 from app.db.schemas import Message, MessageInput
 from app.llm import get_llm_client
 from app.prompts import CURRENT_TUTOR_PROMPT
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Answer-leak guard
+# ---------------------------------------------------------------------------
+
+_GUARD_PROMPT = """\
+You are an answer-leak detector for a math tutoring system.
+
+A tutor's reply will be shown to you along with the student's message.
+Your ONLY job: determine whether the tutor revealed the FINAL ANSWER
+or a COMPLETE SOLUTION to the student's math problem.
+
+Guidelines:
+- Giving a HINT, asking a QUESTION, or showing ONE intermediate step
+  is NOT leaking — that is good tutoring.
+- Revealing the final numerical/algebraic answer IS leaking.
+- Writing out a full worked solution IS leaking.
+- If there is no math problem being solved (just conversation or concept
+  explanation), reply NO.
+
+Reply with exactly one word: YES or NO.
+""".strip()
+
+
+async def _check_answer_leak(
+    user_message: str, assistant_reply: str, session_id: UUID
+) -> None:
+    """Fire-and-forget guard: checks if the reply leaked the answer.
+
+    Runs after the response has already been streamed to the user, so it
+    adds zero latency to the chat. Its purpose is monitoring — the logs
+    let us spot prompt weaknesses and iterate.
+    """
+    try:
+        llm = get_llm_client()
+        probe = [
+            MessageInput(role="system", content=_GUARD_PROMPT),
+            MessageInput(
+                role="user",
+                content=(
+                    f"STUDENT MESSAGE:\n{user_message}\n\n"
+                    f"TUTOR REPLY:\n{assistant_reply}"
+                ),
+            ),
+        ]
+        verdict = await llm.complete(probe, max_tokens=3)
+        verdict = verdict.strip().upper()
+
+        if verdict.startswith("YES"):
+            logger.warning(
+                "ANSWER-LEAK detected | session=%s | student=%.80s | reply=%.120s",
+                session_id,
+                user_message,
+                assistant_reply,
+            )
+    except Exception:
+        logger.debug("Answer-leak guard failed (non-fatal)", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Context assembly
+# ---------------------------------------------------------------------------
 
 
 def _build_context(
@@ -42,6 +107,11 @@ def _build_context(
     ]
 
 
+# ---------------------------------------------------------------------------
+# Main turn
+# ---------------------------------------------------------------------------
+
+
 async def run_tutor_turn(
     session_id: UUID,
     user_message: str,
@@ -55,6 +125,7 @@ async def run_tutor_turn(
       3. Stream tokens from the LLM, yielding each one to the caller.
       4. After the stream ends cleanly, persist the assembled assistant
          reply in full.
+      5. Fire the answer-leak guard asynchronously (no latency impact).
 
     Returns an async generator of string tokens. Caller (the API route) is
     responsible for framing them into the wire format (SSE, WebSocket, etc.).
@@ -83,6 +154,11 @@ async def run_tutor_turn(
         await asyncio.to_thread(
             repo.append_message, session_id, "assistant", full_reply
         )
+
+        if settings.tutor_answer_guard_enabled:
+            asyncio.create_task(
+                _check_answer_leak(user_message, full_reply, session_id)
+            )
 
 
 async def generate_session_title(first_user_message: str) -> str:

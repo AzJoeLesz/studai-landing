@@ -50,6 +50,10 @@ class Settings(BaseSettings):
         default=1000,
         description="Upper bound on tokens in a single assistant reply.",
     )
+    tutor_answer_guard_enabled: bool = Field(
+        default=True,
+        description="Run a post-reply LLM check for accidental answer leaks.",
+    )
 
     # --- CORS ---------------------------------------------------------------
     # Stored as raw string (comma-separated) to avoid pydantic-settings'
