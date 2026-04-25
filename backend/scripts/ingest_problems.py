@@ -74,9 +74,14 @@ def iter_jsonl_files(root: Path) -> Iterator[Path]:
 def parse_jsonl(path: Path) -> Iterator[ProblemInsert]:
     """Parse a single dataset file into ProblemInsert rows.
 
-    `source_id` is built from `<source>:<file-line-number>` so the same
-    physical input always produces the same logical id, which makes
-    ingestion idempotent.
+    `source_id` includes the parent directory (the math category) because
+    multiple hendrycks category folders all contain a file literally
+    named `hendrycks.jsonl`. Without the parent in the id, line 1 of
+    `Algebra/hendrycks.jsonl` and line 1 of `Geometry/hendrycks.jsonl`
+    would both serialize to "hendrycks:hendrycks:1" and one would
+    silently overwrite the other on upsert. (We learned this the hard
+    way -- the first ingestion only retained 1744 of the 7500
+    hendrycks problems.)
     """
     with path.open("r", encoding="utf-8") as f:
         for lineno, raw in enumerate(f, start=1):
@@ -97,7 +102,7 @@ def parse_jsonl(path: Path) -> Iterator[ProblemInsert]:
                 problem_en=problem,
                 solution_en=solution,
                 answer=(obj.get("answer") or None) and str(obj["answer"]).strip(),
-                source_id=f"{source}:{path.stem}:{lineno}",
+                source_id=f"{source}:{path.parent.name}/{path.stem}:{lineno}",
             )
 
 
