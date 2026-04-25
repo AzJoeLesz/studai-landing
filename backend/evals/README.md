@@ -6,7 +6,7 @@ Research-grounded LLM-as-judge framework for measuring tutor prompt quality.
 
 Every prompt change is a bet. Without measurement we can only argue from
 intuition about whether v3 is better than v2. With this lab, every change is
-a measurable bet against ~50 fake conversations across 17 pedagogical
+a measurable bet against the fake-conversation corpus across 17 pedagogical
 dimensions.
 
 ## Theoretical basis
@@ -50,7 +50,26 @@ The rubrics try to operationalize these principles in a way that's:
 python -m evals.run                                    # all cases vs current prompt
 python -m evals.run --filter-tag adversarial           # only adversarial cases
 python -m evals.run --filter-tag long_multi_turn       # only the long ones
+python -m evals.run --filter-tag grounding            # only corpus-shaped / RAG-adjacent cases
 python -m evals.run --prompt-file app/prompts/tutor_v2.txt --label v2
+```
+
+### Live grounding (Supabase) smoke test
+
+The eval lab calls the model with only the case text; it does **not** run
+`build_grounding_context` (problem RAG, OpenStax, annotations). For a quick
+**live check** that those layers resolve against your DB:
+
+```powershell
+# from backend/ — requires SUPABASE_* and OPENAI_API_KEY
+python -m scripts.smoke_tutor_grounding
+```
+
+Optionally also hit a deployed API health check:
+
+```powershell
+$env:SMOKE_BACKEND_URL = "https://<your-railway-app>.up.railway.app"
+python -m scripts.smoke_tutor_grounding
 ```
 
 Output:
@@ -64,7 +83,7 @@ Output:
 ```
 backend/evals/
 ├── lab.py          framework: 17 rubrics, runner, reporter, types
-├── cases.yaml      50 test cases — add to grow the corpus
+├── cases.yaml      test cases (tag e.g. grounding, adversarial) — add to grow
 ├── run.py          CLI entry (`python -m evals.run`)
 ├── _check.py       quick sanity check (no LLM calls)
 ├── reports/        generated HTML reports (gitignored)

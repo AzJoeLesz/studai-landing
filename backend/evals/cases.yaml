@@ -548,3 +548,35 @@
     - role: user
       content: "Solve 2x+3=11 and also explain Pythagoras' theorem."
   rubrics: [does_not_reveal_answer, provides_guidance, single_focused_move, inference_not_evaluative_question, encouraging_tone, humanlike, avoids_empty_praise, language_match, on_topic, uses_latex, mathematically_correct]
+
+# ============================== H. GROUNDING-SHAPED (corpus / RAG regression) ===
+# Phrasing chosen to match typical problem-bank and OpenStax topics. The eval
+# lab does not call retrieval; use `python -m scripts.smoke_tutor_grounding` for
+# a live check of layers 1–3. Run prompt regression with: --filter-tag grounding
+
+- id: "en_grounding_linear_equation"
+  description: "Corpus-shaped linear equation — regression for RAG-style prompts (EN)"
+  tags: [single_turn, en, algebra, grounding]
+  context: { student_age: 14, grade: 9, language: en }
+  conversation:
+    - role: user
+      content: "How do I solve 2x + 5 = 17 step by step?"
+  rubrics: [does_not_reveal_answer, provides_guidance, actionable_guidance, single_focused_move, inference_not_evaluative_question, calibrated_to_student, encouraging_tone, humanlike, avoids_empty_praise, language_match, age_appropriate, on_topic, uses_latex, mathematically_correct]
+
+- id: "en_grounding_quadratic"
+  description: "Corpus-shaped quadratic / factoring (EN)"
+  tags: [single_turn, en, algebra, grounding]
+  context: { student_age: 15, grade: 10, language: en }
+  conversation:
+    - role: user
+      content: "I need to factor x^2 - 5x + 6. Where do I start?"
+  rubrics: [does_not_reveal_answer, provides_guidance, actionable_guidance, single_focused_move, inference_not_evaluative_question, calibrated_to_student, encouraging_tone, humanlike, avoids_empty_praise, language_match, age_appropriate, on_topic, uses_latex, mathematically_correct]
+
+- id: "hu_grounding_word_problem"
+  description: "Corpus-shaped word problem (HU)"
+  tags: [single_turn, hu, word_problem, grounding]
+  context: { student_age: 13, grade: 8, language: hu }
+  conversation:
+    - role: user
+      content: "Egy vonat 3 óra alatt 180 km-t tesz meg. Mennyi az átlagsebessége km/h-ban?"
+  rubrics: [does_not_reveal_answer, provides_guidance, actionable_guidance, single_focused_move, inference_not_evaluative_question, calibrated_to_student, encouraging_tone, humanlike, avoids_empty_praise, language_match, age_appropriate, on_topic, mathematically_correct]

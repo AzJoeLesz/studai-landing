@@ -18,6 +18,8 @@ backend/
 ├── .env.example                 Copy to .env, fill in secrets
 ├── scripts/                     One-shot CLIs (ingestion, translation, etc.)
 │   ├── ingest_problems.py       JSONL -> public.problems (+ optional embeddings)
+│   ├── annotate_problems.py     problem_annotations (layer 3)
+│   ├── smoke_tutor_grounding.py quick DB check for RAG layers 1–3
 │   └── translate_problems.py    English problems -> Hungarian (+ optional embeddings)
 └── app/
     ├── api/                     Thin HTTP layer — only glue code

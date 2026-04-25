@@ -18,6 +18,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Allow `python -m evals.run` from backend/ regardless of cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -72,6 +74,7 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     args = parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):

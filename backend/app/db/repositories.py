@@ -8,9 +8,12 @@ they don't block the event loop. Async call sites (streaming) wrap calls
 with `asyncio.to_thread`.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Iterable
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from app.db.schemas import (
     Language,
@@ -24,6 +27,8 @@ from app.db.schemas import (
     TutorSession,
 )
 from app.db.supabase import get_supabase_client
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +267,15 @@ def search_problems(
             "filter_difficulty": filter_difficulty,
         },
     ).execute()
-    return [ProblemSearchResult.model_validate(row) for row in (res.data or [])]
+    out: list[ProblemSearchResult] = []
+    for row in res.data or []:
+        if not row.get("problem"):
+            continue
+        try:
+            out.append(ProblemSearchResult.model_validate(row))
+        except ValidationError:
+            logger.debug("search_problems: skip invalid row %s", row.get("id"))
+    return out
 
 
 def upsert_translations(

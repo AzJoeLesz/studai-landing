@@ -89,6 +89,7 @@ Run from `backend/` with a filled `backend/.env` (`SUPABASE_URL`, `SUPABASE_SERV
    - **Write a few rows:** `python -m scripts.annotate_problems --limit 5`, then check the table.  
    - **Scale up:** increase `--limit` in steps (e.g. 50, 200); optional `--concurrency` (default 2). You do not need the full problem bank on day one.  
    - **Production:** deploy the backend (e.g. Railway) so the live tutor uses the same Supabase project you ingested and annotated.
+   - **Verify layers:** `python -m scripts.smoke_tutor_grounding` (optional: set `SMOKE_BACKEND_URL` to also GET `/health`).
 
 5. **Translations (scaffold)**  
    `python -m scripts.translate_problems` (as implemented)
