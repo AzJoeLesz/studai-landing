@@ -47,8 +47,33 @@ backend/
     │   ├── tutor_v2.py          v2 prompt (Socratic + mode awareness)
     │   └── __init__.py          CURRENT_TUTOR_PROMPT pointer
     └── agents/
-        └── tutor.py             Orchestration — the tutor's "brain"
+        ├── tutor.py             Chat turn, optional L1–L3 debug log
+        └── retrieval.py         Problem + OpenStax + annotations (RAG)
 ```
+
+## Verifying the three RAG layers (L1 / L2 / L3)
+
+The tutor can inject three *private* system blocks: **L1** problem-bank
+similarity, **L2** OpenStax chunks, **L3** precomputed `problem_annotations`
+(only for problem IDs that L1’s top hits point at).
+
+1. **Local / same DB as production**  
+   From `backend/`:
+   `python -m scripts.smoke_tutor_grounding`  
+   Read the **Summary** at the end: it says YES/NO for whether each layer had
+   non-empty text on the sample queries. This does not use the browser.
+
+2. **Real chat on the website (Railway logs)**  
+   - In Railway → your backend service → **Variables**, set  
+     `GROUNDING_DEBUG_LOG=true` and redeploy (or wait for the next one).  
+   - Open the site, start a session, send a message.  
+   - In Railway → **Logs**, search for `tutor_grounding |`. One line per turn:
+     `L1_on=True/False L2_on=True/False L3_on=True/False` and character counts.  
+   - Set `GROUNDING_DEBUG_LOG` back to `false` when you are done (less noise in logs).
+
+L3 is **ON** only when L1 has at least one problem hit *and* that `problem_id`
+has a row in `problem_annotations` — it is normal for L3 to be OFF for many
+turns if you have not annotated most of the bank.
 
 ## How a chat turn flows
 

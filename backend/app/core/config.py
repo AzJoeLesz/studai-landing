@@ -101,6 +101,14 @@ class Settings(BaseSettings):
             "include them in system context."
         ),
     )
+    grounding_debug_log: bool = Field(
+        default=False,
+        description=(
+            "If true, log one line per chat turn with character counts for each "
+            "grounding layer (problem RAG, OpenStax, annotations). Use when testing "
+            "that all three layers resolve (see Railway or local server logs)."
+        ),
+    )
 
     # --- CORS ---------------------------------------------------------------
     # Stored as raw string (comma-separated) to avoid pydantic-settings'

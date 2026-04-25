@@ -216,6 +216,21 @@ async def run_tutor_turn(
         repo.append_message, session_id, "user", user_message
     )
 
+    if settings.grounding_debug_log:
+        p = grounding.problem_reference
+        o = grounding.openstax_excerpts
+        a = grounding.teaching_annotations
+        logger.info(
+            "tutor_grounding | session_id=%s | L1_problem_chars=%d L2_openstax_chars=%d L3_annotations_chars=%d | L1_on=%s L2_on=%s L3_on=%s",
+            session_id,
+            len(p or ""),
+            len(o or ""),
+            len(a or ""),
+            bool(p and p.strip()),
+            bool(o and o.strip()),
+            bool(a and a.strip()),
+        )
+
     context = _build_context(
         history,
         user_message,
