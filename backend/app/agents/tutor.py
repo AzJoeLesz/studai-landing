@@ -207,10 +207,10 @@ async def run_tutor_turn(
 
     # All three reads are independent -- pull them in parallel so retrieval
     # latency overlaps with profile + history loads.
-    history, profile, reference_solutions = await asyncio.gather(
+    history, profile, grounding = await asyncio.gather(
         asyncio.to_thread(repo.list_messages, session_id),
         asyncio.to_thread(repo.get_profile, user_id),
-        build_reference_solutions(user_message, language="en"),
+        build_grounding_context(user_message, "en"),
     )
     await asyncio.to_thread(
         repo.append_message, session_id, "user", user_message
