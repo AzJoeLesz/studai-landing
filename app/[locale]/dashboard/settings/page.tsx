@@ -228,16 +228,16 @@ export default function SettingsPage() {
         </Card>
 
         {/* Save row ------------------------------------------------------- */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <Button
-            type="submit"
-            disabled={saving || !initialLoaded}
-            className="self-start"
-          >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+          <Button type="submit" disabled={saving || !initialLoaded}>
             {saving ? t("saving") : t("save")}
           </Button>
           {status && (
-            <StatusMessage type={status.type}>{status.message}</StatusMessage>
+            // StatusMessage has a default `mt-4` for stacking under a form
+            // field; override to 0 so it aligns vertically with the button.
+            <StatusMessage type={status.type} className="mt-0">
+              {status.message}
+            </StatusMessage>
           )}
         </div>
       </form>

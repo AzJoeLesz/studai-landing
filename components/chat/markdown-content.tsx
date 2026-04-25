@@ -11,11 +11,36 @@ interface MarkdownContentProps {
 }
 
 /**
+ * Normalize math delimiters before remark-math sees them.
+ *
+ * The tutor prompt asks for `$...$` / `$$...$$`, which is what remark-math
+ * understands natively. But LLMs sometimes slip into the alternative
+ * MathJax-style delimiters they were trained on (`\(...\)`, `\[...\]`).
+ * If we don't translate them, KaTeX never gets a chance and the user
+ * sees raw LaTeX commands as text.
+ *
+ * We keep this conservative: only the four MathJax-style delimiters get
+ * rewritten. We deliberately do NOT touch bare parens like `( x^2 )`
+ * because false positives in regular prose would be much worse than
+ * occasional unrendered math.
+ */
+function normalizeMathDelimiters(text: string): string {
+  return (
+    text
+      // \[ ... \]  ->  $$ ... $$  (display)
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body) => `$$${body}$$`)
+      // \( ... \)  ->  $ ... $    (inline)
+      .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body) => `$${body}$`)
+  );
+}
+
+/**
  * Renders chat content as Markdown with math support.
  *
  * Pipeline:
- *   raw text → remark-math (parses $..$, $$..$$) → remark-gfm (tables/lists)
- *            → rehype-katex (turns math into KaTeX HTML)  → React elements
+ *   raw text → normalize delimiters → remark-math (parses $..$, $$..$$)
+ *            → remark-gfm (tables/lists) → rehype-katex (turns math into
+ *            KaTeX HTML) → React elements
  *
  * Element-level styling lives below in `components`. This is where we keep
  * the chat readable: tight prose, comfortable line-height, no weird default
@@ -29,7 +54,7 @@ export function MarkdownContent({ children, className }: MarkdownContentProps) {
         rehypePlugins={[rehypeKatex]}
         components={markdownComponents}
       >
-        {children}
+        {normalizeMathDelimiters(children)}
       </ReactMarkdown>
     </div>
   );
