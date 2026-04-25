@@ -16,12 +16,16 @@ backend/
 ├── runtime.txt                  Pins Python 3.12 for Railway's Nixpacks
 ├── railway.json                 Start command + healthcheck config
 ├── .env.example                 Copy to .env, fill in secrets
+├── scripts/                     One-shot CLIs (ingestion, translation, etc.)
+│   ├── ingest_problems.py       JSONL -> public.problems (+ optional embeddings)
+│   └── translate_problems.py    English problems -> Hungarian (+ optional embeddings)
 └── app/
     ├── api/                     Thin HTTP layer — only glue code
     │   ├── deps.py              Shared FastAPI dependencies
     │   ├── health.py            GET /health
     │   ├── sessions.py          CRUD for tutor_sessions
-    │   └── chat.py              POST /chat — SSE streaming
+    │   ├── chat.py              POST /chat — SSE streaming
+    │   └── problems.py          GET /problems/search — semantic search
     ├── core/
     │   ├── config.py            Pydantic-settings (env loader)
     │   └── security.py          Supabase JWT verification
@@ -33,8 +37,12 @@ backend/
     │   ├── base.py              LLMClient abstract interface
     │   ├── openai_client.py     OpenAI implementation
     │   └── __init__.py          get_llm_client() factory
+    ├── embeddings/
+    │   ├── openai_embeddings.py text-embedding-3-small client (1536 dims)
+    │   └── __init__.py          get_embeddings_client() factory
     ├── prompts/
     │   ├── tutor_v1.py          Frozen v1 system prompt
+    │   ├── tutor_v2.py          v2 prompt (Socratic + mode awareness)
     │   └── __init__.py          CURRENT_TUTOR_PROMPT pointer
     └── agents/
         └── tutor.py             Orchestration — the tutor's "brain"
@@ -185,9 +193,39 @@ By default the backend trusts `https://studai.hu` and `http://localhost:3000`.
 If you run the frontend on a different origin (preview deployments,
 different port), add it to `CORS_ORIGINS` as a comma-separated list.
 
+## Problem bank (Phase 8)
+
+The backend ships ~18,000 worked math problems (MATH/Hendrycks +
+GSM8K + ASDiv + SVAMP) into Supabase, with vector embeddings so the
+tutor agent can find pedagogically relevant content instead of
+inventing problems from scratch. See `scripts/README.md` for the full
+ingestion + translation pipeline; the short version is:
+
+```powershell
+# 1) One-time DB migration in Supabase SQL editor
+#    Run sql/003_problem_bank.sql
+
+# 2) Validate the dataset parses (no DB writes, no API calls)
+python -m scripts.ingest_problems --dry-run
+
+# 3) Ingest English text into public.problems
+python -m scripts.ingest_problems
+
+# 4) Generate English embeddings (~EUR 10 for the full corpus)
+python -m scripts.ingest_problems --embed
+
+# 5) Try the search endpoint
+curl -H "Authorization: Bearer $token" `
+     "http://localhost:8000/problems/search?q=quadratic+equation&limit=5"
+```
+
+Hungarian translation is a separate, opt-in pass (~EUR 540 for the full
+corpus, far less for slices). See `scripts/README.md`.
+
 ## What's NOT here (yet)
 
 - Structured logging / error tracking — stdout only for now.
 - Rate limiting — add once we see real traffic.
 - Persistent session summaries — added when context windows get tight.
-- Tools (SymPy, problem bank, progress tracking) — added in the agents layer.
+- Tools (SymPy, progress tracking) — added in the agents layer.
+- Tutor agent does not yet *call* `/problems/search` — that's Phase 10.

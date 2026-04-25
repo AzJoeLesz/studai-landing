@@ -39,3 +39,58 @@ class MessageInput(BaseModel):
 
     role: Role
     content: str
+
+
+# ---------------------------------------------------------------------------
+# Problem bank
+# ---------------------------------------------------------------------------
+
+# Languages the corpus exists in. English is the source of truth; everything
+# else is a translation stored in `problem_translations`.
+Language = Literal["en", "hu"]
+
+
+class Problem(BaseModel):
+    """A canonical math problem row (English). Translations live elsewhere."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    source: str
+    type: str
+    difficulty: str | None = None
+    problem_en: str
+    solution_en: str
+    answer: str | None = None
+    source_id: str | None = None
+    created_at: datetime
+
+
+class ProblemInsert(BaseModel):
+    """The payload passed to `repositories.insert_problems`. No id, no timestamps."""
+
+    source: str
+    type: str
+    difficulty: str | None = None
+    problem_en: str
+    solution_en: str
+    answer: str | None = None
+    source_id: str | None = None
+
+
+class ProblemSearchResult(BaseModel):
+    """One hit returned by the similarity-search RPC.
+
+    `language` is what we *actually* served — it falls back to 'en' when no
+    translation exists in the requested language.
+    """
+
+    id: UUID
+    source: str
+    type: str
+    difficulty: str | None = None
+    problem: str
+    solution: str
+    answer: str | None = None
+    language: Language
+    similarity: float
