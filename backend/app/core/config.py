@@ -61,6 +61,26 @@ class Settings(BaseSettings):
         description="Run a post-reply LLM check for accidental answer leaks.",
     )
 
+    # --- Retrieval-augmented tutoring (Phase 10 v1) -------------------------
+    # On every chat turn, search the problem bank with the student's latest
+    # message and inject the worked solutions of the closest matches as
+    # private context. The tutor uses them as ground truth without revealing.
+    rag_enabled: bool = Field(
+        default=True,
+        description="Enable problem-bank retrieval before each tutor turn.",
+    )
+    rag_top_k: int = Field(
+        default=2,
+        description="How many similar problems to inject into the prompt.",
+    )
+    rag_similarity_threshold: float = Field(
+        default=0.55,
+        description=(
+            "Cosine similarity floor (0-1). Hits below this are dropped to "
+            "avoid polluting the prompt with weak matches."
+        ),
+    )
+
     # --- CORS ---------------------------------------------------------------
     # Stored as raw string (comma-separated) to avoid pydantic-settings'
     # default JSON-list parsing, which makes Railway env vars awkward.

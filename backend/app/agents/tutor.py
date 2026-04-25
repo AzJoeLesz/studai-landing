@@ -18,6 +18,7 @@ import logging
 from typing import AsyncIterator
 from uuid import UUID
 
+from app.agents.retrieval import build_reference_solutions
 from app.core.config import get_settings
 from app.db import repositories as repo
 from app.db.schemas import Message, MessageInput, Profile
@@ -142,6 +143,7 @@ def _build_context(
     user_message: str,
     max_history: int,
     profile: Profile | None,
+    reference_solutions: str | None = None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
@@ -157,6 +159,13 @@ def _build_context(
         # profile context easy to inspect/replace independently.
         system_messages.append(
             MessageInput(role="system", content=profile_snippet)
+        )
+    if reference_solutions:
+        # Always last in the system stack so the model is most likely to
+        # weigh it -- recent context wins ties in many transformer
+        # implementations.
+        system_messages.append(
+            MessageInput(role="system", content=reference_solutions)
         )
 
     recent = history[-max_history:]
@@ -195,9 +204,12 @@ async def run_tutor_turn(
     settings = get_settings()
     llm = get_llm_client()
 
-    history, profile = await asyncio.gather(
+    # All three reads are independent -- pull them in parallel so retrieval
+    # latency overlaps with profile + history loads.
+    history, profile, reference_solutions = await asyncio.gather(
         asyncio.to_thread(repo.list_messages, session_id),
         asyncio.to_thread(repo.get_profile, user_id),
+        build_reference_solutions(user_message, language="en"),
     )
     await asyncio.to_thread(
         repo.append_message, session_id, "user", user_message
@@ -208,6 +220,7 @@ async def run_tutor_turn(
         user_message,
         settings.tutor_max_history_messages,
         profile,
+        reference_solutions,
     )
 
     chunks: list[str] = []
