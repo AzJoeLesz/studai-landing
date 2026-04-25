@@ -143,17 +143,32 @@ def insert_in_batches(
 # ---------------------------------------------------------------------------
 
 
-async def embed_missing(language: str = "en", concurrency: int = 4) -> int:
-    """Embed every problem that doesn't yet have an `<lang>` embedding."""
+async def embed_missing(
+    language: str = "en", concurrency: int = 4, batch: int = 500
+) -> int:
+    """Embed every problem that doesn't yet have an `<language>` embedding.
+
+    Pulls `batch` missing rows at a time from the DB, embeds them, writes
+    them back. Loops until two consecutive empty responses confirm there's
+    nothing left -- this defends against rare cases where Postgres returns
+    an empty result on a transient slow query instead of a proper error.
+    """
     embeddings = get_embeddings_client()
     total_embedded = 0
+    consecutive_empty = 0
+
     while True:
-        # Process in waves of up to 1000 missing rows at a time. The
-        # repository function caps the in-memory ID set so we don't blow up
-        # on very large corpora.
-        missing = repo.list_problems_missing_embedding(language=language, limit=1000)  # type: ignore[arg-type]
+        missing = repo.list_problems_missing_embedding(  # type: ignore[arg-type]
+            language=language, limit=batch
+        )
         if not missing:
-            break
+            consecutive_empty += 1
+            if consecutive_empty >= 2:
+                # Truly nothing left.
+                break
+            print("  no missing rows returned, retrying once...")
+            continue
+        consecutive_empty = 0
 
         # We embed the problem text + solution together so similarity
         # captures both "looks like" the question and "leads to" the same
@@ -170,7 +185,7 @@ async def embed_missing(language: str = "en", concurrency: int = 4) -> int:
         ]
         n = repo.insert_embeddings(pairs)
         total_embedded += n
-        print(f"  stored {n} embeddings (cumulative: {total_embedded})")
+        print(f"  stored {n} embeddings (cumulative this run: {total_embedded})")
     return total_embedded
 
 

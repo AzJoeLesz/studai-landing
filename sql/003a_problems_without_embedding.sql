@@ -40,3 +40,11 @@ $$;
 -- caller using the anon/authenticated key can still use it if needed.
 grant execute on function public.problems_without_embedding(text, int)
   to authenticated, service_role;
+
+-- Speed up the LEFT JOIN above. The primary key on
+-- `problem_embeddings(problem_id, language)` is the wrong column order for
+-- filtering by language first; this composite index fixes that and makes
+-- the anti-join fast enough to comfortably finish under the 8s timeout
+-- even at full corpus size.
+create index if not exists problem_embeddings_lang_problem_idx
+  on public.problem_embeddings (language, problem_id);
