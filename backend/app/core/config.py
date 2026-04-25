@@ -6,14 +6,20 @@ in tests or when we add new deploy targets.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve `.env` to an absolute path under `backend/` so the config loads
+# correctly no matter the current working directory. Running scripts from
+# `backend/scripts/` was breaking before this.
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_PATH),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
