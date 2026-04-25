@@ -146,26 +146,16 @@ def list_problems_missing_embedding(
 ) -> list[Problem]:
     """Return problems that don't yet have an embedding for `language`.
 
-    Uses Supabase's filter syntax. We do this client-side rather than a
-    server-side LEFT JOIN because the supabase-py client doesn't expose
-    arbitrary joins cleanly, and the result set is small enough.
+    Calls the `problems_without_embedding()` Postgres function (added in
+    migration 003a). Doing this as a server-side LEFT JOIN avoids
+    sending tens of thousands of UUIDs back through the URL, which
+    exploded with `NOT IN (...)` once we passed ~1000 embedded rows.
     """
     sb = get_supabase_client()
-    embedded = (
-        sb.table("problem_embeddings")
-        .select("problem_id")
-        .eq("language", language)
-        .execute()
-    )
-    embedded_ids = {row["problem_id"] for row in (embedded.data or [])}
-
-    query = sb.table("problems").select("*").limit(limit)
-    if embedded_ids:
-        # `not.in.(...)` syntax for Postgrest
-        ids_csv = ",".join(embedded_ids)
-        query = query.not_.in_("id", list(embedded_ids))
-        _ = ids_csv  # kept for clarity, not used
-    res = query.execute()
+    res = sb.rpc(
+        "problems_without_embedding",
+        {"target_language": language, "max_count": limit},
+    ).execute()
     return [Problem.model_validate(row) for row in (res.data or [])]
 
 
