@@ -17,6 +17,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # Defensive: env vars copy-pasted from dashboards often pick up a
+        # leading tab or trailing space. Strip them automatically so we
+        # don't crash with "Invalid URL" or similar deep inside SDKs.
+        str_strip_whitespace=True,
     )
 
     # --- Supabase -----------------------------------------------------------

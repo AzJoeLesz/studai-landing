@@ -196,7 +196,7 @@ export function ChatView({ sessionId }: ChatViewProps) {
             className="h-4 w-4 shrink-0 text-muted-foreground"
             aria-hidden
           />
-          <h1 className="truncate text-sm font-medium text-foreground">
+          <h1 className="truncate text-base font-medium text-foreground">
             {title}
           </h1>
         </div>
@@ -251,7 +251,7 @@ function EmptyChat() {
   const t = useTranslations("chat");
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-      <h2 className="text-2xl font-serif tracking-tight text-foreground">
+      <h2 className="text-2xl font-serif text-foreground">
         {t("emptyTitle")}
       </h2>
       <p className="max-w-md text-sm text-muted-foreground leading-relaxed">

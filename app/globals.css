@@ -96,6 +96,10 @@
   }
 
   h1, h2, h3, h4 {
-    @apply font-serif tracking-tight;
+    /* Instrument Serif is a display face — its proportions read best
+     * at the default tracking. Don't apply `tracking-tight` here or the
+     * letters compress and the headings look squished, especially at
+     * smaller sizes. */
+    @apply font-serif;
   }
 }

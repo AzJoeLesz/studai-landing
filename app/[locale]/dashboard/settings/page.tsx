@@ -82,7 +82,7 @@ export default function SettingsPage() {
   return (
     <div className="flex w-full flex-col gap-8 px-6 py-10 sm:px-10 sm:py-14 lg:px-14">
       <header>
-        <h1 className="text-3xl font-serif tracking-tight text-foreground">
+        <h1 className="text-3xl font-serif text-foreground">
           {t("title")}
         </h1>
       </header>

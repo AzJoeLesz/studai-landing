@@ -79,7 +79,7 @@ export default function SessionsPage() {
     <div className="flex w-full flex-col gap-8 px-6 py-10 sm:px-10 sm:py-14 lg:px-14">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-serif tracking-tight text-foreground">
+          <h1 className="text-3xl font-serif text-foreground">
             {t("title")}
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
@@ -136,7 +136,7 @@ function EmptyState() {
         <Sparkles className="h-5 w-5" aria-hidden />
       </div>
       <div className="max-w-md space-y-1.5">
-        <h2 className="text-xl font-serif tracking-tight text-foreground">
+        <h2 className="text-xl font-serif text-foreground">
           {t("emptyTitle")}
         </h2>
         <p className="text-sm text-muted-foreground leading-relaxed">
