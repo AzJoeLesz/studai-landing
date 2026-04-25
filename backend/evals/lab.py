@@ -95,137 +95,384 @@ class RunResult:
     total_elapsed_ms: int
 
 
-# ---------------------------------------------------------------------------
-# Rubrics — add new ones here.
+# ===========================================================================
+# Rubrics — research-grounded set
+# ===========================================================================
 #
-# LLM-as-judge prompts must end by asking for STRICT JSON output of shape:
+# Sources:
+#   * Maurya et al. 2025 "Unifying AI Tutor Evaluation" (NAACL) — MRBench's
+#     8-dimension taxonomy: Mistake Identification, Mistake Location,
+#     Revealing of the Answer, Providing Guidance, Actionability, Coherence,
+#     Tutor Tone, Humanlikeness.
+#   * Macina et al. 2025 "MathTutorBench" (EMNLP) — 4 pedagogical principles:
+#     (a) correctness, (b) scaffolding instead of revealing, (c) encourage
+#     self-correction, (d) don't overload student.
+#   * Vail et al. 2016 EDM — inference questions ("how would you...?")
+#     correlate with learning gains; evaluative questions ("do you understand?")
+#     don't help novices.
+#   * VanLehn et al. 2007 — model, scaffold, fade: hints calibrated to
+#     student's evident competence.
+#   * Graesser et al. 1998 AutoTutor — discrete dialogue moves; ONE move
+#     per turn principle.
+#
+# Rubric grouping (used in reports):
+#   A. Mistake handling   1-2     conditional on student making a mistake
+#   B. Solution disclosure  3      core anti-pattern: revealing the answer
+#   C. Guidance quality    4-8    what good guidance looks like
+#   D. Conversation       9        coherence with prior turns
+#   E. Affective         10-12     tone, humanness, sycophancy
+#   F. Style / form     13-16     language, age, topic, LaTeX
+#   G. Correctness        17       no false math
+#
+# All judge prompts follow the MathTutorBench "extended" pattern:
+# enumerate criteria explicitly + tell the judge to penalize specific
+# anti-patterns. The paper showed this beats simple judge prompts by 10+pp.
+#
+# Output contract (every judge): strict JSON
 #   {"score": <float 0..1 or null>, "reason": "<one short sentence>"}
+# `null` means N/A (rubric doesn't apply to this turn — e.g. mistake_located
+# when there's no mistake). The lab treats nulls as "not counted" in averages.
 # ---------------------------------------------------------------------------
-SOCRATIC_TEMPLATE = """You are evaluating a math tutor's response for Socratic teaching style.
 
-The student wrote:
+
+_JUDGE_OUTPUT = (
+    'Output ONLY a JSON object: '
+    '{"score": <float between 0 and 1, or null if not applicable>, '
+    '"reason": "<one short sentence justifying the score>"}'
+)
+
+
+# ---------- A. Mistake handling -------------------------------------------
+MISTAKE_IDENTIFIED_TEMPLATE = """You are evaluating whether a math tutor recognized that the student made a mistake.
+
+Student's last message:
 \"\"\"{{ case.last_user_message }}\"\"\"
 
-The tutor replied:
+Tutor's reply:
 \"\"\"{{ response }}\"\"\"
 
-A Socratic tutor GUIDES the student to discover the answer through questions or hints. They do NOT reveal the final answer or perform the calculation for the student.
+The student DID make a mistake in this turn. Evaluate whether the tutor recognized it.
 
 Score:
-  1.0  Tutor asked a guiding question OR gave a hint, did NOT reveal the answer.
-  0.7  Tutor mostly guided but slipped a partial calculation or strong hint.
-  0.3  Tutor gave most of the solution, leaving only a trivial step.
-  0.0  Tutor gave the full answer / did the calculation.
+  1.0  Tutor clearly recognized the student made a mistake (does not affirm the wrong answer).
+  0.5  Tutor's reply hints there's a problem but is vague or evasive.
+  0.0  Tutor confirmed / praised the wrong answer, or moved on as if it were correct.
 
-Special case:
-  - If the student's message is NOT a math problem (e.g. greeting, off-topic, conceptual question with no specific problem to solve), output {"score": null, "reason": "not a problem-solving turn"}.
-  - If the student EXPLICITLY insists on a direct answer after the tutor already tried Socratic, do not penalize giving the answer.
+The worst failure mode is empty praise of an incorrect answer, e.g. "Great job!" + restating the wrong number. Score 0.0 in that case.
 
-Output ONLY a JSON object: {"score": <float 0-1 or null>, "reason": "<one short sentence>"}"""
+""" + _JUDGE_OUTPUT
 
 
-GUIDES_WITH_QUESTION_TEMPLATE = """You are evaluating a math tutor's response.
+MISTAKE_LOCATED_TEMPLATE = """You are evaluating whether a math tutor pinpointed WHERE in the student's reasoning the mistake is.
 
-The student wrote:
+Student's last message:
 \"\"\"{{ case.last_user_message }}\"\"\"
 
-The tutor replied:
+Tutor's reply:
 \"\"\"{{ response }}\"\"\"
 
-Did the tutor ask the student a question (in any form) that invites the student to think or respond?
+The student made a mistake at a specific step. Did the tutor target that exact step?
 
 Score:
-  1.0  Reply contains a clear question that prompts the student.
-  0.5  Reply gently suggests next thinking ("try X" / "what if X?") without explicit question mark.
-  0.0  Reply is purely declarative or just gives the answer.
+  1.0  Tutor pointed to the specific step / claim that was wrong, even indirectly through a question about it.
+  0.5  Tutor noticed something is off but didn't isolate which step.
+  0.0  Tutor is generic ("your answer is wrong, try again") or wrong about which step is the issue.
 
-If the student's message was a greeting or thank-you and a question would feel forced, output {"score": null, "reason": "no question expected"}.
-
-Output ONLY: {"score": <float 0-1 or null>, "reason": "<one short sentence>"}"""
+""" + _JUDGE_OUTPUT
 
 
-LANGUAGE_MATCH_TEMPLATE = """You are evaluating whether a tutor reply is in the SAME language as the student's message.
+# ---------- B. Solution disclosure ----------------------------------------
+DOES_NOT_REVEAL_ANSWER_TEMPLATE = """You are evaluating whether a math tutor REVEALED the final answer to the student.
 
-The student wrote (language: {{ case.context.language|default('unknown') }}):
+Student's last message:
 \"\"\"{{ case.last_user_message }}\"\"\"
 
-The tutor replied:
+Tutor's reply:
 \"\"\"{{ response }}\"\"\"
+
+A good tutor scaffolds the student toward the answer rather than computing or stating it. Revealing the answer (or the calculation that yields it directly) is the most common failure of LLM tutors.
+
+Score:
+  1.0  Reply did NOT state the final numeric answer or the complete decisive calculation. Used questions, hints, or partial scaffolds.
+  0.7  Reply mostly scaffolded but leaked a non-trivial chunk of the calculation.
+  0.3  Reply gave most of the solution; only a final arithmetic step was left to the student.
+  0.0  Reply explicitly stated the final answer, or did the entire calculation.
+
+Special cases:
+  - If the student is NOT working on a problem (greeting, off-topic, conceptual lesson with no specific problem) → output {"score": null, "reason": "no answer to reveal in this turn"}.
+  - If the student EXPLICITLY insists on the direct answer after the tutor already tried scaffolding (e.g. "just tell me, please"), do not penalize giving the answer.
+
+""" + _JUDGE_OUTPUT
+
+
+# ---------- C. Guidance quality -------------------------------------------
+PROVIDES_GUIDANCE_TEMPLATE = """You are evaluating whether a math tutor's reply provides any substantive guidance.
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+"Substantive guidance" means: a hint, a guiding question, an example, a definition, a strategy suggestion, or pointing at relevant prior knowledge. Vague reassurance ("good question, keep trying") does NOT count.
+
+Score:
+  1.0  Reply contains real guidance the student can use.
+  0.5  Reply offers acknowledgement plus a token nudge, but mostly empty.
+  0.0  Reply is acknowledgement only ("I see", "ok", "try again") with no actual help.
+
+""" + _JUDGE_OUTPUT
+
+
+ACTIONABLE_GUIDANCE_TEMPLATE = """You are evaluating whether a math tutor's guidance is actionable.
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Actionable means: the student knows specifically what to do or think about next. "Think about this more carefully" is NOT actionable. "What happens to both sides if you subtract 5?" IS actionable.
+
+Score:
+  1.0  Student can plausibly take the next step from this reply alone.
+  0.5  Reply gestures at a direction but the student would still need to guess what to actually do.
+  0.0  Reply is too vague to act on, or contradicts itself.
+
+If the reply provides no guidance at all, output {"score": null, "reason": "no guidance to assess actionability of"} — that's covered by the `provides_guidance` rubric.
+
+""" + _JUDGE_OUTPUT
+
+
+SINGLE_FOCUSED_MOVE_TEMPLATE = """You are evaluating whether a math tutor made a SINGLE focused pedagogical move per turn.
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Cognitive-load research (and AutoTutor work) shows that one question or one hint per turn is more effective than dumping multiple. Three consecutive questions overwhelm; one targeted question scaffolds.
+
+Score:
+  1.0  Exactly one focused question OR one focused hint per turn.
+  0.5  Two related moves (e.g. a brief acknowledgement + one question) — borderline acceptable.
+  0.0  Three or more separate questions/hints in one reply, OR a wall of explanation that buries the move.
+
+""" + _JUDGE_OUTPUT
+
+
+INFERENCE_NOT_EVALUATIVE_QUESTION_TEMPLATE = """You are evaluating whether a tutor's question is an INFERENCE question vs an EVALUATIVE question.
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+  * Inference questions require the student to construct or reason: "How would you simplify this?", "What changes if x is negative?", "Why does that step work?"
+  * Evaluative questions just check meta-understanding: "Do you understand?", "Does that make sense?", "Are you with me?"
+
+Educational research (Vail et al. 2016) shows inference questions correlate with learning gains; evaluative questions don't help novices.
+
+Score:
+  1.0  Reply contains an inference question (asks the student to think / construct / reason).
+  0.5  Reply has both an inference question AND an evaluative one — partial credit.
+  0.0  Reply contains only evaluative questions ("understand?", "ok?") OR no question at all.
+
+If a question would feel forced (greeting, off-topic) output {"score": null, "reason": "no question expected"}.
+
+""" + _JUDGE_OUTPUT
+
+
+CALIBRATED_TO_STUDENT_TEMPLATE = """You are evaluating whether a math tutor's hint is calibrated to the student's evident level.
+
+Student is {{ case.context.student_age|default('a teenager') }} years old, in grade {{ case.context.grade|default('unknown') }}.
+
+Student's last message (and prior turns suggest their current understanding):
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+VanLehn's "model, scaffold, fade" principle: a hint should match the student's competence. Too easy = patronizing / wastes time. Too hard = student stuck. Just right = nudges them to the next step they can take.
+
+Score:
+  1.0  Hint is at the right level — addresses the gap the student showed without insulting their existing knowledge.
+  0.5  Hint slightly mismatched (a bit too easy or a bit advanced).
+  0.0  Hint is far off — either trivial relative to the student's evident level, or jumps over their actual gap.
+
+If reply provides no hint, output {"score": null, "reason": "no hint to calibrate"}.
+
+""" + _JUDGE_OUTPUT
+
+
+# ---------- D. Conversation quality ---------------------------------------
+COHERENT_WITH_PRIOR_TURNS_TEMPLATE = """You are evaluating whether a tutor's reply is coherent with the prior conversation.
+
+Full conversation so far:
+{% for turn in case.conversation %}
+{{ turn.role }}: {{ turn.content }}
+{% endfor %}
+
+Tutor's new reply:
+\"\"\"{{ response }}\"\"\"
+
+Score:
+  1.0  Reply makes sense given the conversation so far. References prior turns appropriately.
+  0.5  Reply is on-topic but slightly disconnected (treats this as a fresh question when it shouldn't).
+  0.0  Reply contradicts prior turns, ignores what was just said, or restarts the topic out of nowhere.
+
+For single-turn cases (only one user message, no prior tutor turns), output {"score": null, "reason": "single-turn case"}.
+
+""" + _JUDGE_OUTPUT
+
+
+# ---------- E. Affective / relational -------------------------------------
+ENCOURAGING_TONE_TEMPLATE = """You are evaluating the tone of a tutor's reply on a 3-way scale (per MRBench taxonomy).
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Score:
+  1.0  Encouraging — warm, treats the student as capable, motivating without being saccharine.
+  0.5  Neutral — businesslike, neither warm nor cold.
+  0.0  Discouraging or offensive — cold, dismissive, lecturing, condescending ("come on, this is easy"), or in any way negative.
+
+""" + _JUDGE_OUTPUT
+
+
+HUMANLIKE_TEMPLATE = """You are evaluating whether a tutor's reply sounds humanlike (vs generic AI).
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Humanlike means: natural phrasing, occasional informal touches, doesn't sound templated. NOT humanlike: corporate AI cadence, every reply starts with "Great question!", over-formatted bullet lists everywhere, robotic structure.
+
+Score:
+  1.0  Reads like a real teacher talking to a student.
+  0.5  Reads like a competent but slightly templated assistant.
+  0.0  Generic AI cadence — formulaic openers, mechanical structure, no personality.
+
+""" + _JUDGE_OUTPUT
+
+
+AVOIDS_EMPTY_PRAISE_TEMPLATE = """You are evaluating whether a tutor avoided EMPTY PRAISE.
+
+Student's last message:
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Empty praise = positive language used reflexively for trivial or wrong inputs. Examples:
+  * "Great job!" when the student gave a one-word answer or made a mistake.
+  * "Excellent reasoning!" right before correcting that very reasoning.
+  * "Fantastic question!" for a generic question.
+
+Honest acknowledgement is different — "good — you noticed the sign change" attached to a real observation is fine.
+
+Score:
+  1.0  Reply is honest. Praise (if any) is targeted and earned.
+  0.5  Slight reflexive positivity but not damaging.
+  0.0  Reflexive empty praise, especially praise of a wrong answer or trivial input.
+
+""" + _JUDGE_OUTPUT
+
+
+# ---------- F. Style / form -----------------------------------------------
+LANGUAGE_MATCH_TEMPLATE = """You are evaluating whether a tutor reply is in the same language as the student.
+
+Student wrote (declared language: {{ case.context.language|default('unknown') }}):
+\"\"\"{{ case.last_user_message }}\"\"\"
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+LaTeX, math symbols, and short proper nouns don't count as language switches.
 
 Score:
   1.0  Reply is entirely in the same language as the student.
   0.5  Reply is mostly the same language but mixes in another (e.g. random English in a Hungarian reply).
   0.0  Reply is in a different language entirely.
 
-LaTeX, math symbols, and short proper nouns don't count as language switches.
-
-Output ONLY: {"score": <float 0-1>, "reason": "<one short sentence>"}"""
+""" + _JUDGE_OUTPUT
 
 
 AGE_APPROPRIATE_TEMPLATE = """You are evaluating whether a tutor's response uses age-appropriate language.
 
-The student is {{ case.context.student_age|default('a teenager') }} years old, in grade {{ case.context.grade|default('unknown') }}.
+Student is {{ case.context.student_age|default('a teenager') }} years old, in grade {{ case.context.grade|default('unknown') }}.
 
-The tutor replied:
+Tutor's reply:
 \"\"\"{{ response }}\"\"\"
 
 Score:
   1.0  Vocabulary, sentence length, and concept density are appropriate for the age.
   0.5  Mostly fine but with a few too-advanced words or one over-complex sentence.
-  0.0  Reads like a research paper or like talking to a small child — clearly mismatched.
+  0.0  Reads like a research paper for a teen, OR like talking to a small child for an older student — clearly mismatched.
 
-Output ONLY: {"score": <float 0-1>, "reason": "<one short sentence>"}"""
+""" + _JUDGE_OUTPUT
 
 
-KIND_TONE_TEMPLATE = """You are evaluating the tone of a tutor's reply.
+ON_TOPIC_TEMPLATE = """You are evaluating whether a math tutor stayed on topic.
 
-The student wrote:
+Student's last message:
 \"\"\"{{ case.last_user_message }}\"\"\"
 
-The tutor replied:
+Tutor's reply:
 \"\"\"{{ response }}\"\"\"
 
-A good tutor is warm and supportive — never patronizing ("good job, little one!"), never cold or dismissive, never lecturing.
-
-Score:
-  1.0  Warm + supportive + treats the student as capable.
-  0.5  Neutral; no warmth but no negative tone.
-  0.0  Patronizing OR dismissive OR cold OR lecturing.
-
-Output ONLY: {"score": <float 0-1>, "reason": "<one short sentence>"}"""
-
-
-ON_TOPIC_TEMPLATE = """You are evaluating whether a tutor stayed on topic.
-
-The student wrote:
-\"\"\"{{ case.last_user_message }}\"\"\"
-
-The tutor replied:
-\"\"\"{{ response }}\"\"\"
-
-A math tutor should stay focused on math (or on bringing the conversation back to math, gently). Off-topic chatter is bad.
+A math tutor should stay focused on math (or on bringing the conversation back to math, gently and warmly). Off-topic chatter is undesirable.
 
 Score:
   1.0  Reply is about math, OR gently redirects an off-topic question back to learning.
   0.5  Reply mixes math + significant off-topic content.
-  0.0  Reply is entirely off-topic.
+  0.0  Reply is entirely off-topic or refuses without redirecting.
 
-Output ONLY: {"score": <float 0-1>, "reason": "<one short sentence>"}"""
+""" + _JUDGE_OUTPUT
 
 
+# ---------- G. Mathematical correctness -----------------------------------
+MATHEMATICALLY_CORRECT_TEMPLATE = """You are evaluating whether a math tutor's reply contains any mathematically WRONG claims.
+
+Conversation:
+{% for turn in case.conversation %}
+{{ turn.role }}: {{ turn.content }}
+{% endfor %}
+
+Tutor's reply:
+\"\"\"{{ response }}\"\"\"
+
+Check the math, definitions, and claims. Affirming a student's wrong answer counts as a wrong claim. So does stating an incorrect formula or fact.
+
+Score:
+  1.0  No false math, no false claims. (Asking questions without claiming anything also scores 1.0 — silence ≠ wrong.)
+  0.5  Mostly correct but one minor inaccuracy or sloppy notation that could mislead.
+  0.0  Contains a clearly wrong claim (incorrect formula, incorrect arithmetic, confirming a wrong student answer, etc).
+
+""" + _JUDGE_OUTPUT
+
+
+# ---------- Pattern rubric: LaTeX usage -----------------------------------
 def uses_latex_pattern(response: str, case: Case) -> Score:
-    """Pattern rubric: if the response discusses math, it should use LaTeX."""
+    """If the response discusses math, it should use LaTeX delimiters, not Unicode."""
     has_latex = bool(re.search(r"\$[^$\n]+\$|\$\$[\s\S]+?\$\$", response))
-    has_unicode_math = bool(
-        re.search(r"[²³⁴⁵√∫∑∏≈≠≤≥πθ∞]", response)
-    )
+    has_unicode_math = bool(re.search(r"[²³⁴⁵√∫∑∏≈≠≤≥πθ∞]", response))
     last_user = case.last_user_message.lower()
     looks_like_math_question = any(
         kw in last_user
         for kw in [
             "egyenlet", "függvény", "derivált", "integrál", "deriv",
+            "képlet", "számold",
             "equation", "function", "derivative", "integral", "solve",
-            "x", "x²", "x^2", "számold", "compute", "calculate",
+            "compute", "calculate", "formula",
+            "x²", "x^2", "²", "³", "√",
         ]
     )
 
@@ -235,26 +482,93 @@ def uses_latex_pattern(response: str, case: Case) -> Score:
         return Score(score=0.0, reason="used Unicode math symbols instead of LaTeX")
     if has_latex:
         return Score(score=1.0, reason="uses LaTeX delimiters")
-    if not has_latex:
-        return Score(score=0.5, reason="math context but no LaTeX (might be conceptual reply)")
-    return Score(score=1.0, reason="ok")
+    return Score(score=0.5, reason="math context but no LaTeX (might be conceptual reply)")
 
 
+# ===========================================================================
+# Rubric registry
+# ===========================================================================
 RUBRICS: dict[str, Rubric] = {
     r.name: r
     for r in [
+        # A. Mistake handling
         Rubric(
-            name="socratic",
-            weight=3.0,
-            description="Did NOT reveal the answer; guided instead.",
-            judge_template=SOCRATIC_TEMPLATE,
+            name="mistake_identified",
+            weight=2.5,
+            description="Recognized that the student made a mistake (no false affirmation).",
+            judge_template=MISTAKE_IDENTIFIED_TEMPLATE,
         ),
         Rubric(
-            name="guides_with_question",
+            name="mistake_located",
             weight=2.0,
-            description="Asked a question that invites student thinking.",
-            judge_template=GUIDES_WITH_QUESTION_TEMPLATE,
+            description="Pinpointed WHERE in the student's reasoning the mistake is.",
+            judge_template=MISTAKE_LOCATED_TEMPLATE,
         ),
+        # B. Solution disclosure
+        Rubric(
+            name="does_not_reveal_answer",
+            weight=3.0,
+            description="Did NOT give away the final answer; scaffolded instead.",
+            judge_template=DOES_NOT_REVEAL_ANSWER_TEMPLATE,
+        ),
+        # C. Guidance quality
+        Rubric(
+            name="provides_guidance",
+            weight=2.0,
+            description="Reply has substantive guidance, not just acknowledgement.",
+            judge_template=PROVIDES_GUIDANCE_TEMPLATE,
+        ),
+        Rubric(
+            name="actionable_guidance",
+            weight=2.0,
+            description="Hint is specific enough that the student knows what to do next.",
+            judge_template=ACTIONABLE_GUIDANCE_TEMPLATE,
+        ),
+        Rubric(
+            name="single_focused_move",
+            weight=1.5,
+            description="ONE question or hint per turn, not a wall.",
+            judge_template=SINGLE_FOCUSED_MOVE_TEMPLATE,
+        ),
+        Rubric(
+            name="inference_not_evaluative_question",
+            weight=2.0,
+            description="Asks 'how would you...?', not 'do you understand?'.",
+            judge_template=INFERENCE_NOT_EVALUATIVE_QUESTION_TEMPLATE,
+        ),
+        Rubric(
+            name="calibrated_to_student",
+            weight=1.5,
+            description="Hint matched to student's evident level (not babyish, not overwhelming).",
+            judge_template=CALIBRATED_TO_STUDENT_TEMPLATE,
+        ),
+        # D. Conversation quality
+        Rubric(
+            name="coherent_with_prior_turns",
+            weight=2.0,
+            description="Reply makes sense given the prior conversation.",
+            judge_template=COHERENT_WITH_PRIOR_TURNS_TEMPLATE,
+        ),
+        # E. Affective / relational
+        Rubric(
+            name="encouraging_tone",
+            weight=1.5,
+            description="Encouraging vs neutral vs offensive (3-way per MRBench).",
+            judge_template=ENCOURAGING_TONE_TEMPLATE,
+        ),
+        Rubric(
+            name="humanlike",
+            weight=1.0,
+            description="Sounds like a real teacher, not generic AI cadence.",
+            judge_template=HUMANLIKE_TEMPLATE,
+        ),
+        Rubric(
+            name="avoids_empty_praise",
+            weight=2.0,
+            description="No reflexive 'Great job!' for trivial/wrong inputs.",
+            judge_template=AVOIDS_EMPTY_PRAISE_TEMPLATE,
+        ),
+        # F. Style / form
         Rubric(
             name="language_match",
             weight=3.0,
@@ -268,12 +582,6 @@ RUBRICS: dict[str, Rubric] = {
             judge_template=AGE_APPROPRIATE_TEMPLATE,
         ),
         Rubric(
-            name="kind_tone",
-            weight=1.0,
-            description="Warm and supportive without being patronizing.",
-            judge_template=KIND_TONE_TEMPLATE,
-        ),
-        Rubric(
             name="on_topic",
             weight=2.0,
             description="Stays on math (or redirects back gently).",
@@ -284,6 +592,13 @@ RUBRICS: dict[str, Rubric] = {
             weight=1.0,
             description="Uses LaTeX delimiters when math is in the reply.",
             pattern_fn=uses_latex_pattern,
+        ),
+        # G. Mathematical correctness
+        Rubric(
+            name="mathematically_correct",
+            weight=3.0,
+            description="No false math, no affirmation of wrong student answers.",
+            judge_template=MATHEMATICALLY_CORRECT_TEMPLATE,
         ),
     ]
 }

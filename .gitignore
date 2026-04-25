@@ -46,3 +46,6 @@ math_problem_example/
 
 # generated eval reports
 backend/evals/reports/
+
+# research papers / PDFs (kept locally for reference, not committed)
+*.pdf
