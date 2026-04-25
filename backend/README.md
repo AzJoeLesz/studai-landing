@@ -64,12 +64,12 @@ similarity, **L2** OpenStax chunks, **L3** precomputed `problem_annotations`
    non-empty text on the sample queries. This does not use the browser.
 
 2. **Real chat on the website (Railway logs)**  
-   - In Railway → your backend service → **Variables**, set  
-     `GROUNDING_DEBUG_LOG=true` and redeploy (or wait for the next one).  
-   - Open the site, start a session, send a message.  
-   - In Railway → **Logs**, search for `tutor_grounding |`. One line per turn:
-     `L1_on=True/False L2_on=True/False L3_on=True/False` and character counts.  
-   - Set `GROUNDING_DEBUG_LOG` back to `false` when you are done (less noise in logs).
+   - After each message, **Deploy logs** show a line like  
+     `chat stream started | session_id=… user_id=… msg_chars=…` (no message text).  
+     If you only see `POST /chat 200`, the request still worked — that line is the
+     HTTP access log; app logs are separate.  
+   - For **L1/L2/L3** details, set `GROUNDING_DEBUG_LOG=true`, redeploy, then search
+     logs for `tutor_grounding |`. Turn it off when done.
 
 L3 is **ON** only when L1 has at least one problem hit *and* that `problem_id`
 has a row in `problem_annotations` — it is normal for L3 to be OFF for many
