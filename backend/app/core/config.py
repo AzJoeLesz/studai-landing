@@ -7,9 +7,31 @@ in tests or when we add new deploy targets.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated, Any
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _env_bool_forgiving(v: Any) -> bool:
+    """Parse bool from env; tolerate Railway/copy-paste noise (e.g. ' =true', '=true')."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, str):
+        s = v.strip()
+        while s.startswith("="):
+            s = s[1:].strip()
+        s_lower = s.lower()
+        if s_lower in ("true", "1", "yes", "on"):
+            return True
+        if s_lower in ("false", "0", "no", "off", ""):
+            return False
+    return False
+
+
+GroundingDebugLogFlag = Annotated[bool, BeforeValidator(_env_bool_forgiving)]
 
 # Resolve `.env` to an absolute path under `backend/` so the config loads
 # correctly no matter the current working directory. Running scripts from
@@ -101,7 +123,7 @@ class Settings(BaseSettings):
             "include them in system context."
         ),
     )
-    grounding_debug_log: bool = Field(
+    grounding_debug_log: GroundingDebugLogFlag = Field(
         default=False,
         description=(
             "If true, log one line per chat turn with character counts for each "
