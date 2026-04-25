@@ -45,11 +45,12 @@ def _sse_frame(event: str, data: str) -> bytes:
 
 async def _chat_stream(
     session_id: UUID,
+    user_id: UUID,
     user_message: str,
     is_first_turn: bool,
 ) -> AsyncIterator[bytes]:
     try:
-        async for token in run_tutor_turn(session_id, user_message):
+        async for token in run_tutor_turn(session_id, user_id, user_message):
             yield _sse_frame("token", token)
 
         if is_first_turn:
@@ -80,7 +81,9 @@ async def chat(payload: ChatRequest, user: CurrentUser) -> StreamingResponse:
     is_first_turn = not any(m.role == "user" for m in existing)
 
     return StreamingResponse(
-        _chat_stream(payload.session_id, payload.message, is_first_turn),
+        _chat_stream(
+            payload.session_id, user.user_id, payload.message, is_first_turn
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

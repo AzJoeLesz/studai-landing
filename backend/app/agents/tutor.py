@@ -4,8 +4,8 @@ This is the brain of StudAI. Today it is a single function: load history,
 append user message, stream an LLM reply, persist the reply. When we add
 tools (SymPy for step-by-step algebra, a problem bank, etc.) or split
 tutoring into sub-agents, only this file's body changes — the API layer
-keeps calling `run_tutor_turn(session_id, user_message)` and getting back
-a token stream.
+keeps calling `run_tutor_turn(session_id, user_id, user_message)` and
+getting back a token stream.
 
 Design rules for this file:
   * The API layer must never import from `llm/` or `prompts/` directly.
@@ -20,7 +20,7 @@ from uuid import UUID
 
 from app.core.config import get_settings
 from app.db import repositories as repo
-from app.db.schemas import Message, MessageInput
+from app.db.schemas import Message, MessageInput, Profile
 from app.llm import get_llm_client
 from app.prompts import CURRENT_TUTOR_PROMPT
 
@@ -85,6 +85,54 @@ async def _check_answer_leak(
 
 
 # ---------------------------------------------------------------------------
+# Student profile -> prompt context
+# ---------------------------------------------------------------------------
+
+
+def _format_profile_snippet(profile: Profile | None) -> str | None:
+    """Turn a profile row into a short paragraph the model can read.
+
+    Returns None if the profile is missing or has no useful fields filled
+    in -- in that case we don't add anything to the system context, and
+    the tutor falls back to its generic behavior.
+
+    We keep this deliberately short. Long profiles waste context tokens
+    and dilute the actual tutoring instructions.
+    """
+    if profile is None:
+        return None
+
+    parts: list[str] = []
+    if profile.display_name:
+        parts.append(f"Name: {profile.display_name.strip()}")
+    if profile.age is not None:
+        parts.append(f"Age: {profile.age}")
+    if profile.grade_level:
+        parts.append(f"Grade level: {profile.grade_level.strip()}")
+    if profile.interests:
+        parts.append(f"Interests: {profile.interests.strip()}")
+    if profile.learning_goals:
+        parts.append(f"Learning goals: {profile.learning_goals.strip()}")
+    if profile.notes:
+        parts.append(f"Notes from the student: {profile.notes.strip()}")
+
+    if not parts:
+        return None
+
+    body = "\n".join(parts)
+    return (
+        "STUDENT PROFILE\n"
+        "Use this to personalize the conversation: address the student by\n"
+        "name when natural, calibrate vocabulary and examples to their age\n"
+        "and grade level, and use their interests to motivate examples\n"
+        "where it fits. Don't reference the profile explicitly unless\n"
+        "the student asks.\n"
+        "---\n"
+        f"{body}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Context assembly
 # ---------------------------------------------------------------------------
 
@@ -93,15 +141,27 @@ def _build_context(
     history: list[Message],
     user_message: str,
     max_history: int,
+    profile: Profile | None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
     Strategy v1: system prompt + last N messages + the new user turn.
     Strategy v2 (later): system prompt + running summary + last N messages.
     """
+    system_messages: list[MessageInput] = [
+        MessageInput(role="system", content=CURRENT_TUTOR_PROMPT),
+    ]
+    profile_snippet = _format_profile_snippet(profile)
+    if profile_snippet:
+        # Separate system message keeps the persona prompt frozen and the
+        # profile context easy to inspect/replace independently.
+        system_messages.append(
+            MessageInput(role="system", content=profile_snippet)
+        )
+
     recent = history[-max_history:]
     return [
-        MessageInput(role="system", content=CURRENT_TUTOR_PROMPT),
+        *system_messages,
         *[MessageInput(role=m.role, content=m.content) for m in recent],
         MessageInput(role="user", content=user_message),
     ]
@@ -114,12 +174,14 @@ def _build_context(
 
 async def run_tutor_turn(
     session_id: UUID,
+    user_id: UUID,
     user_message: str,
 ) -> AsyncIterator[str]:
     """Execute one conversational turn.
 
     Order of operations (important):
-      1. Load existing history — this is what gets sent to the LLM as context.
+      1. Load existing history + the student's profile in parallel -- both
+         are read-only and feed the LLM context.
       2. Persist the user's message. Even if the LLM call fails afterwards,
          we don't lose what the student wrote.
       3. Stream tokens from the LLM, yielding each one to the caller.
@@ -133,13 +195,19 @@ async def run_tutor_turn(
     settings = get_settings()
     llm = get_llm_client()
 
-    history = await asyncio.to_thread(repo.list_messages, session_id)
+    history, profile = await asyncio.gather(
+        asyncio.to_thread(repo.list_messages, session_id),
+        asyncio.to_thread(repo.get_profile, user_id),
+    )
     await asyncio.to_thread(
         repo.append_message, session_id, "user", user_message
     )
 
     context = _build_context(
-        history, user_message, settings.tutor_max_history_messages
+        history,
+        user_message,
+        settings.tutor_max_history_messages,
+        profile,
     )
 
     chunks: list[str] = []

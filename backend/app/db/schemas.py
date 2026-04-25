@@ -42,6 +42,29 @@ class MessageInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Student profile
+# ---------------------------------------------------------------------------
+
+
+class Profile(BaseModel):
+    """A student profile row.
+
+    All personalization fields are optional. The tutor can work with
+    nothing -- it just becomes more personal as the student fills more in.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    display_name: str | None = None
+    age: int | None = None
+    grade_level: str | None = None
+    interests: str | None = None
+    learning_goals: str | None = None
+    notes: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Problem bank
 # ---------------------------------------------------------------------------
 

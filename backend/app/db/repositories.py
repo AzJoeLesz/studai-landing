@@ -17,10 +17,35 @@ from app.db.schemas import (
     Problem,
     ProblemInsert,
     ProblemSearchResult,
+    Profile,
     Role,
     TutorSession,
 )
 from app.db.supabase import get_supabase_client
+
+
+# ---------------------------------------------------------------------------
+# Profile
+# ---------------------------------------------------------------------------
+def get_profile(user_id: UUID) -> Profile | None:
+    """Read the current student profile. Missing rows return None.
+
+    Cheap to call on every chat turn -- it's a single indexed lookup.
+    We don't cache because profiles can change at any time and the cost of
+    a stale prompt context is real.
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("profiles")
+        .select(
+            "id,display_name,age,grade_level,interests,learning_goals,notes"
+        )
+        .eq("id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return Profile.model_validate(rows[0]) if rows else None
 
 
 # ---------------------------------------------------------------------------
