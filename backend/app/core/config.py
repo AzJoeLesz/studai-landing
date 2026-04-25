@@ -81,6 +81,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- OpenStax text RAG (ingested from books_extracted) -------------------
+    material_rag_enabled: bool = Field(
+        default=True,
+        description="Search embedded OpenStax chunks for each tutor turn.",
+    )
+    material_rag_top_k: int = Field(
+        default=4,
+        description="How many OpenStax chunks to add to the prompt.",
+    )
+    material_rag_threshold: float = Field(
+        default=0.40,
+        description="Cosine similarity floor for OpenStax chunk hits (0-1).",
+    )
+    annotation_injection_enabled: bool = Field(
+        default=True,
+        description=(
+            "If problem-bank hits have precomputed `problem_annotations` rows, "
+            "include them in system context."
+        ),
+    )
+
     # --- CORS ---------------------------------------------------------------
     # Stored as raw string (comma-separated) to avoid pydantic-settings'
     # default JSON-list parsing, which makes Railway env vars awkward.

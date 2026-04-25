@@ -117,3 +117,25 @@ class ProblemSearchResult(BaseModel):
     answer: str | None = None
     language: Language
     similarity: float
+
+
+class TeachingMaterialHit(BaseModel):
+    """One OpenStax chunk from `match_teaching_material()`."""
+
+    id: UUID
+    source: str
+    book_slug: str
+    page_start: int
+    page_end: int
+    body: str
+    similarity: float
+
+
+class ProblemAnnotationRecord(BaseModel):
+    """A row in `problem_annotations` (pedagogy JSON for one problem)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    problem_id: UUID
+    payload: dict
+    model: str | None = None

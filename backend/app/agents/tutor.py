@@ -18,7 +18,7 @@ import logging
 from typing import AsyncIterator
 from uuid import UUID
 
-from app.agents.retrieval import build_reference_solutions
+from app.agents.retrieval import GroundingContext, build_grounding_context
 from app.core.config import get_settings
 from app.db import repositories as repo
 from app.db.schemas import Message, MessageInput, Profile
@@ -143,7 +143,7 @@ def _build_context(
     user_message: str,
     max_history: int,
     profile: Profile | None,
-    reference_solutions: str | None = None,
+    grounding: GroundingContext | None = None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
@@ -160,13 +160,14 @@ def _build_context(
         system_messages.append(
             MessageInput(role="system", content=profile_snippet)
         )
-    if reference_solutions:
-        # Always last in the system stack so the model is most likely to
-        # weigh it -- recent context wins ties in many transformer
-        # implementations.
-        system_messages.append(
-            MessageInput(role="system", content=reference_solutions)
-        )
+    g = grounding or GroundingContext()
+    for snippet in (
+        g.problem_reference,
+        g.openstax_excerpts,
+        g.teaching_annotations,
+    ):
+        if snippet:
+            system_messages.append(MessageInput(role="system", content=snippet))
 
     recent = history[-max_history:]
     return [
@@ -220,7 +221,7 @@ async def run_tutor_turn(
         user_message,
         settings.tutor_max_history_messages,
         profile,
-        reference_solutions,
+        grounding,
     )
 
     chunks: list[str] = []

@@ -8,6 +8,7 @@ they don't block the event loop. Async call sites (streaming) wrap calls
 with `asyncio.to_thread`.
 """
 
+from datetime import datetime, timezone
 from typing import Iterable
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from app.db.schemas import (
     ProblemSearchResult,
     Profile,
     Role,
+    TeachingMaterialHit,
     TutorSession,
 )
 from app.db.supabase import get_supabase_client
@@ -285,3 +287,142 @@ def upsert_translations(
         .execute()
     )
     return len(res.data or [])
+
+
+# ---------------------------------------------------------------------------
+# Teaching material (OpenStax chunks) + problem annotations
+# ---------------------------------------------------------------------------
+def delete_teaching_chunks_for_book(source: str, book_slug: str) -> None:
+    """Remove all chunks (and cascaded embeddings) for one book. Re-ingest use."""
+    sb = get_supabase_client()
+    (
+        sb.table("teaching_material_chunks")
+        .delete()
+        .eq("source", source)
+        .eq("book_slug", book_slug)
+        .execute()
+    )
+
+
+def upsert_teaching_chunks(
+    rows: list[dict],
+) -> list[dict]:
+    """Bulk upsert chunk rows. Each dict: source, book_slug, chunk_index, page_start, page_end, body."""
+    if not rows:
+        return []
+    sb = get_supabase_client()
+    res = (
+        sb.table("teaching_material_chunks")
+        .upsert(rows, on_conflict="source,book_slug,chunk_index")
+        .execute()
+    )
+    return res.data or []
+
+
+def list_teaching_chunks_missing_embedding(
+    book_slug: str | None, limit: int = 2000
+) -> list[dict]:
+    """Chunks with no row in teaching_material_embeddings."""
+    sb = get_supabase_client()
+    if book_slug:
+        res = sb.rpc(
+            "teaching_chunks_without_embedding_for_book",
+            {"p_book_slug": book_slug, "max_count": limit},
+        ).execute()
+    else:
+        res = sb.rpc(
+            "teaching_chunks_without_embedding",
+            {"max_count": limit},
+        ).execute()
+    return res.data or []
+
+
+def list_problems_without_annotations(limit: int = 500) -> list[Problem]:
+    """Batch of problems with no `problem_annotations` row (RPC)."""
+    sb = get_supabase_client()
+    res = sb.rpc("problems_without_annotations", {"max_count": limit}).execute()
+    return [Problem.model_validate(row) for row in (res.data or [])]
+
+
+def insert_teaching_embeddings(
+    pairs: Iterable[tuple[UUID, list[float]]],
+    *,
+    chunk_size: int = 100,
+) -> int:
+    """Upsert (chunk_id, embedding) for teaching material."""
+    sb = get_supabase_client()
+    total_attempted = 0
+    buffer: list[dict] = []
+    for cid, vec in pairs:
+        buffer.append({"chunk_id": str(cid), "embedding": vec})
+        if len(buffer) >= chunk_size:
+            (
+                sb.table("teaching_material_embeddings")
+                .upsert(buffer, on_conflict="chunk_id")
+                .execute()
+            )
+            total_attempted += len(buffer)
+            buffer.clear()
+    if buffer:
+        (
+            sb.table("teaching_material_embeddings")
+            .upsert(buffer, on_conflict="chunk_id")
+            .execute()
+        )
+        total_attempted += len(buffer)
+    return total_attempted
+
+
+def search_teaching_material(
+    query_embedding: list[float],
+    *,
+    match_count: int = 8,
+) -> list[TeachingMaterialHit]:
+    """Top-k OpenStax chunks by cosine similarity."""
+    sb = get_supabase_client()
+    res = sb.rpc(
+        "match_teaching_material",
+        {
+            "query_embedding": query_embedding,
+            "match_count": match_count,
+        },
+    ).execute()
+    return [TeachingMaterialHit.model_validate(row) for row in (res.data or [])]
+
+
+def get_annotations_for_problem_ids(
+    problem_ids: list[UUID],
+) -> dict[UUID, dict]:
+    """Return payload JSON keyed by problem_id. Missing rows omitted."""
+    if not problem_ids:
+        return {}
+    sb = get_supabase_client()
+    res = (
+        sb.table("problem_annotations")
+        .select("problem_id, payload, model")
+        .in_("problem_id", [str(p) for p in problem_ids])
+        .execute()
+    )
+    out: dict[UUID, dict] = {}
+    for row in res.data or []:
+        out[UUID(row["problem_id"])] = {
+            "payload": row["payload"],
+            "model": row.get("model"),
+        }
+    return out
+
+
+def upsert_problem_annotation(
+    problem_id: UUID, payload: dict, model: str | None
+) -> None:
+    sb = get_supabase_client()
+    now = datetime.now(timezone.utc).isoformat()
+    sb.table("problem_annotations").upsert(
+        {
+            "problem_id": str(problem_id),
+            "payload": payload,
+            "model": model,
+            "updated_at": now,
+        },
+        on_conflict="problem_id",
+    ).execute()

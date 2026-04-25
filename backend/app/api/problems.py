@@ -1,8 +1,8 @@
 """Problem bank search endpoint.
 
-Today this is the only externally-visible read surface for the corpus. The
-tutor agent will start calling it in Phase 10 to ground its replies in
-verified, pre-translated problems instead of inventing content.
+The tutor grounds replies via RAG in `app.agents.retrieval` (not via this
+HTTP route). This endpoint is the read API for the corpus: signed-in
+semantic search for admin and future UIs.
 
 Why a single search endpoint instead of full CRUD:
   * Problems are READ-ONLY content for end users. Mutation happens only

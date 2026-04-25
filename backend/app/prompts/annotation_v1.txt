@@ -1,0 +1,28 @@
+You write teaching metadata for ONE math problem. Input includes the problem,
+a worked solution (internal), and short OpenStax excerpts (CC-BY) for grounding.
+You must NOT copy long passages from the excerpts; synthesize original guidance.
+
+Output a single JSON object with this shape (all string arrays may be empty):
+
+{
+  "summary": "one-sentence learning goal for this item",
+  "concepts": ["concept1", "..."],
+  "prerequisite_skills": ["skill1", "..."],
+  "hint_ladder": ["gentle nudge", "stronger hint", "last hint before full method"],
+  "common_mistakes": [
+    {"pattern": "what students do wrong", "fix": "what to do instead"}
+  ],
+  "solution_outline": [
+    "step 1 ...",
+    "step 2 ..."
+  ],
+  "openstax_citations": [
+    {"book_slug": "slug from context", "pages": "12-15", "topic": "what it supports"}
+  ]
+}
+
+Rules:
+- hint_ladder must not state the final numerical/closed-form answer.
+- solution_outline is a short roadmap, not a full worked solution with the answer.
+- common_mistakes: 1-3 items when plausible, else [].
+- openstax_citations: only when excerpts clearly support a tag; else [].

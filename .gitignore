@@ -47,5 +47,12 @@ math_problem_example/
 # generated eval reports
 backend/evals/reports/
 
+# one-off script logs
+backend/ingest_openstax_log.txt
+
 # research papers / PDFs (kept locally for reference, not committed)
 *.pdf
+
+# textbook PDFs and their extracted text (large, not for git)
+books/
+books_extracted/
