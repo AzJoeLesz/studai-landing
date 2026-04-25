@@ -782,15 +782,23 @@ def aggregate(result: RunResult) -> dict[str, Any]:
     }
 
 
+def _safe_print(text: str) -> None:
+    """Print with ASCII fallback for Windows consoles that choke on Unicode."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", errors="replace").decode("ascii"))
+
+
 def print_terminal_report(result: RunResult) -> None:
     agg = aggregate(result)
     print()
     print(
         f"Eval results: {result.prompt_label} | {agg['n_cases']} cases | model={result.model} | {result.total_elapsed_ms / 1000:.1f}s"
     )
-    print("─" * 72)
+    print("-" * 72)
     print(f"{'Rubric':<26}{'Avg':>8}  {'Pass%':>6}   {'N':>4}   weight")
-    print("─" * 72)
+    print("-" * 72)
     for name, stats in sorted(
         agg["per_rubric"].items(),
         key=lambda kv: -kv[1]["weight"],
@@ -801,7 +809,7 @@ def print_terminal_report(result: RunResult) -> None:
             f"{stats['pass_rate'] * 100:>5.0f}%   "
             f"{stats['n']:>4}   {stats['weight']:>4.1f}"
         )
-    print("─" * 72)
+    print("-" * 72)
     print(f"Weighted total: {agg['weighted_total']:.2f}")
     print()
 
@@ -818,9 +826,9 @@ def print_terminal_report(result: RunResult) -> None:
                 for n, s in cr.scores.items()
                 if s.score is not None and s.score < 0.5
             ]
-            print(f"  • {cr.case.id}")
+            _safe_print(f"  - {cr.case.id}")
             for f in failed:
-                print(f"      ↳ {f}")
+                _safe_print(f"      -> {f}")
         if len(failures) > 10:
             print(f"  ... and {len(failures) - 10} more (see HTML report)")
         print()

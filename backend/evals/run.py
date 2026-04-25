@@ -111,8 +111,6 @@ async def main() -> int:
         concurrency=args.concurrency,
     )
 
-    print_terminal_report(result)
-
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     out = args.html or (
         REPORTS_DIR
@@ -120,6 +118,8 @@ async def main() -> int:
     )
     write_html_report(result, out)
     print(f"HTML report: {out}")
+
+    print_terminal_report(result)
 
     return 0
 
