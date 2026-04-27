@@ -204,43 +204,77 @@ def _topic_for_placement_round(
     return "linear equations"
 
 
+def _difficulties_for_request(
+    profile: priors_mod.PlacementProfile, logical: str | None
+) -> list[str]:
+    """Translate a logical difficulty bucket using the band's override
+    if one exists, else the global default in `mastery.corpus_difficulties_for`.
+
+    Exists so callers can stay band-agnostic when computing the
+    difficulty list to filter by.
+    """
+    if profile.difficulty_map and logical:
+        return list(
+            profile.difficulty_map.get(logical.strip().lower(), [])
+        )
+    return mastery_mod.corpus_difficulties_for(logical)
+
+
+async def _load_placement_profile(
+    user_id: UUID,
+) -> priors_mod.PlacementProfile:
+    """Load the user's profile and return the right `PlacementProfile`.
+
+    Single source of truth for "what corpus subset is this student
+    allowed to see in the placement quiz". Called once per
+    /placement/start and once per /placement/answer.
+    """
+    profile = await asyncio.to_thread(repo.get_profile, user_id)
+    if profile is None:
+        return priors_mod.placement_profile_for_user(None, None)
+    return priors_mod.placement_profile_for_user(
+        profile.grade_level, profile.age
+    )
+
+
 async def _pick_topic_relevant_problem(
     *,
     topic: str,
     difficulty: str | None,
     exclude_ids: list[UUID],
+    placement_profile: priors_mod.PlacementProfile,
 ) -> Problem | None:
-    """Pick a placement problem that matches the requested topic.
+    """Pick a placement problem that matches the requested topic and the
+    student's grade band.
 
-    Why this exists: `repo.fetch_problem_for_placement` only knows
-    about source/difficulty -- it has no concept of topic. So a slot
-    labeled "linear equations" could surface a geometry question, and
-    a 4th-grade slot could pull a Hendrycks Olympiad problem. The fix
-    is to embed the topic name, do an ANN search against
-    `problem_embeddings`, and let the source-allowlist + length
-    filters in the repo pick the first acceptable hit.
+    Two filters compose:
 
-    Difficulty handling is bucket-based: `difficulty` is a logical
-    bucket ("easy"/"medium"/"hard") that gets translated into the
-    actual corpus difficulty strings (e.g. "Level 1", "Level 2",
-    "easy_medium") via `mastery.corpus_difficulties_for`. Without
-    this translation, exact-match filtering returns zero rows because
-    Hendrycks uses "Level N" while ASDiv uses "easy"/"medium" -- and
-    the placement quiz would terminate after one question.
+      1. **Topic relevance** via the same problem-bank semantic search
+         the live tutor uses (`find_relevant_problems`). Embed the
+         topic name -> ANN against `problem_embeddings` -> keep the
+         top 30 candidate IDs.
 
-    Five-step fallback chain (each step is wider than the last):
-      1. Semantic hits + difficulty bucket
-      2. Semantic hits, no difficulty
-      3. Difficulty bucket, no semantic (allowlist only)
-      4. No filters, allowlist only
+      2. **Grade-band appropriateness** via `placement_profile`:
+         `placement_profile.sources` is the curated source list for
+         the band (e.g. `("gsm8k",)` for grade school, never Hendrycks
+         which is too advanced even at "Level 1"); `placement_profile.
+         difficulty_map`, when set, overrides the default bucket -> 
+         corpus-strings mapping so "easy/medium/hard" mean different
+         things inside vs outside Hendrycks.
+
+    Five-step fallback chain (each step is strictly looser than the
+    previous one), so a sparse / unembedded corpus never kills the
+    quiz mid-stream:
+
+      1. Semantic hits + band sources + band-difficulty bucket
+      2. Semantic hits + band sources, no difficulty
+      3. Band sources + difficulty bucket, no semantic
+      4. Band sources only (no semantic, no difficulty)
       5. None -- caller treats as "corpus exhausted, finish quiz"
     """
-    diffs = mastery_mod.corpus_difficulties_for(difficulty)
+    diffs = _difficulties_for_request(placement_profile, difficulty)
+    sources = list(placement_profile.sources)
 
-    # `find_relevant_problems` already wraps the embed-then-RPC dance.
-    # We ignore its similarity_threshold here -- the threshold matters
-    # for live-RAG noise control, but for placement we're happy to take
-    # the best available match even if it's a bit loose.
     hits = await find_relevant_problems(
         topic,
         "en",
@@ -253,6 +287,7 @@ async def _pick_topic_relevant_problem(
         chosen = await asyncio.to_thread(
             repo.fetch_problem_for_placement_by_ids,
             candidate_ids,
+            sources=sources,
             exclude_ids=exclude_ids,
             filter_difficulties=diffs,
         )
@@ -262,6 +297,7 @@ async def _pick_topic_relevant_problem(
         chosen = await asyncio.to_thread(
             repo.fetch_problem_for_placement_by_ids,
             candidate_ids,
+            sources=sources,
             exclude_ids=exclude_ids,
             filter_difficulties=None,
         )
@@ -269,21 +305,23 @@ async def _pick_topic_relevant_problem(
             return chosen
 
     # Semantic search came back empty (corpus may not be embedded yet, or
-    # the topic name doesn't ANN-match anything). Fall back to source
-    # allowlist + difficulty bucket.
+    # the topic name doesn't ANN-match anything in the band's sources).
+    # Fall back to source list + difficulty bucket.
     chosen = await asyncio.to_thread(
         repo.fetch_problem_for_placement,
+        sources=sources,
         exclude_ids=exclude_ids,
         filter_difficulties=diffs,
     )
     if chosen is not None:
         return chosen
 
-    # Final safety net: any allowlisted problem at all. Better an
+    # Final safety net: any band-allowed problem at all. Better an
     # off-topic, off-difficulty placement question than the quiz dying
     # on its second turn.
     return await asyncio.to_thread(
         repo.fetch_problem_for_placement,
+        sources=sources,
         exclude_ids=exclude_ids,
         filter_difficulties=None,
     )
@@ -304,6 +342,7 @@ async def placement_start(user: CurrentUser) -> PlacementStartResponse:
     if len(attempts) >= PLACEMENT_LENGTH:
         return PlacementStartResponse(next=None, completed=True)
 
+    placement_profile = await _load_placement_profile(user.user_id)
     topic = await asyncio.to_thread(
         _topic_for_placement_round, user.user_id, len(attempts)
     )
@@ -318,6 +357,7 @@ async def placement_start(user: CurrentUser) -> PlacementStartResponse:
         topic=topic,
         difficulty=difficulty,
         exclude_ids=[a.problem_id for a in attempts],
+        placement_profile=placement_profile,
     )
     if problem is None:
         raise HTTPException(
@@ -386,6 +426,7 @@ async def placement_answer(
             summary=summary,
         )
 
+    placement_profile = await _load_placement_profile(user.user_id)
     next_topic = await asyncio.to_thread(
         _topic_for_placement_round, user.user_id, len(attempts)
     )
@@ -400,6 +441,7 @@ async def placement_answer(
         topic=next_topic,
         difficulty=next_difficulty,
         exclude_ids=[a.problem_id for a in attempts],
+        placement_profile=placement_profile,
     )
     if next_problem is None:
         # Corpus exhausted -- treat as completed early.

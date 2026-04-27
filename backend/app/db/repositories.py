@@ -675,17 +675,19 @@ def list_placement_attempts(
 
 # Source allowlist for the placement quiz.
 #
-# The corpus is a mix: hendrycks (well-edited Olympiad/contest math),
-# gsm8k (clean grade-school word problems), asdiv + svamp (synthetic
-# template-generated -- frequent nonsense like "87 oranges in 93
-# groups"). For the placement quiz we want the student's first
-# impression of StudAI to be problems that actually make sense, so we
-# limit the pool to the curated sources here.
+# The full corpus is a mix: hendrycks (Olympiad/contest math, hard at
+# every "Level"), gsm8k (clean grade-school word problems), asdiv +
+# svamp (synthetic template-generated -- frequent nonsense). For the
+# placement quiz the *active* source list is computed PER GRADE BAND
+# (see `agents.grade_priors.placement_profile_for_band`) -- a 4th
+# grader gets gsm8k only, a university student gets hendrycks. The
+# constant below is just a reasonable default for callers that don't
+# have a band yet.
 #
 # Live tutoring RAG (`agents/retrieval.find_relevant_problems`) keeps
 # pulling from the full corpus -- there the problems are PRIVATE
 # context, not shown verbatim to the student.
-_PLACEMENT_SOURCE_ALLOWLIST = ("hendrycks", "gsm8k", "openstax")
+_PLACEMENT_DEFAULT_SOURCES = ("hendrycks", "gsm8k", "openstax")
 
 # Length sanity: too-short problems are usually parse errors; too-long
 # problems are usually long proofs that don't fit a 5-question quiz UX.
@@ -695,25 +697,34 @@ _PLACEMENT_MAX_LEN = 600
 
 def fetch_problem_for_placement(
     *,
+    sources: list[str] | None = None,
     exclude_ids: list[UUID],
     filter_difficulties: list[str] | None = None,
 ) -> Problem | None:
     """Pick any allowlisted problem matching one of `filter_difficulties`.
 
     Used as the last-resort fallback when topic-aware semantic search
-    returns nothing. Pass `filter_difficulties=None` (or `[]`) to skip
-    the difficulty filter entirely. Pass a list -- e.g.
-    ``["Level 1", "Level 2", "easy"]`` -- to allow any of them, since
-    different datasets in the corpus use different difficulty
-    vocabularies (Hendrycks: "Level 1"-"Level 5", GSM8K: often null,
-    ASDiv: words). See `agents.mastery.corpus_difficulties_for`.
+    returns nothing.
+
+    `sources` -- the source-name allowlist for THIS placement turn.
+    Defaults to `_PLACEMENT_DEFAULT_SOURCES` when omitted. Per-band
+    callers (the only realistic ones) should always pass an explicit
+    list from `agents.grade_priors.placement_profile_for_band`.
+
+    `filter_difficulties=None` (or `[]`) skips the difficulty filter.
+    Pass a list -- e.g. ``["Level 1", "Level 2", "easy"]`` -- to allow
+    any of them, since different datasets use different difficulty
+    vocabularies. See `agents.mastery.corpus_difficulties_for`.
     """
+    src_list = list(sources) if sources else list(_PLACEMENT_DEFAULT_SOURCES)
+    if not src_list:
+        return None  # caller passed an empty list explicitly -- nothing to fetch
     sb = get_supabase_client()
     q = sb.table("problems").select(
         "id,source,type,difficulty,problem_en,solution_en,answer,source_id,"
         "created_at"
     )
-    q = q.in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
+    q = q.in_("source", src_list)
     if filter_difficulties:
         q = q.in_("difficulty", filter_difficulties)
     if exclude_ids:
@@ -733,6 +744,7 @@ def fetch_problem_for_placement(
 def fetch_problem_for_placement_by_ids(
     candidate_ids: list[UUID],
     *,
+    sources: list[str] | None = None,
     exclude_ids: list[UUID],
     filter_difficulties: list[str] | None = None,
 ) -> Problem | None:
@@ -740,11 +752,14 @@ def fetch_problem_for_placement_by_ids(
 
     The IDs come from semantic topic search
     (``agents/retrieval.find_relevant_problems`` against the topic name).
-    We then enforce the source allowlist + difficulty list + length
-    sanity + the excluded-IDs set on top, *while preserving the
-    semantic-search rank order*.
+    We then enforce the source list + difficulty list + length sanity +
+    the excluded-IDs set on top, *while preserving the semantic-search
+    rank order*.
     """
     if not candidate_ids:
+        return None
+    src_list = list(sources) if sources else list(_PLACEMENT_DEFAULT_SOURCES)
+    if not src_list:
         return None
     exclude_str = {str(i) for i in exclude_ids}
     keep = [str(i) for i in candidate_ids if str(i) not in exclude_str]
@@ -758,7 +773,7 @@ def fetch_problem_for_placement_by_ids(
             "source_id,created_at"
         )
         .in_("id", keep)
-        .in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
+        .in_("source", src_list)
     )
     if filter_difficulties:
         q = q.in_("difficulty", filter_difficulties)

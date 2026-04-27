@@ -103,6 +103,43 @@ corpus_difficulties_for(None)      -> []
 corpus_difficulties_for('garbage') -> []
 ```
 
+### Onboarding iteration #4 (per-band placement profile)
+
+Iteration #3 fixed the difficulty mapping but left a more fundamental issue: a 4th grader entering grade `"4"` was getting Hendrycks-flavoured "decimals" problems (Olympiad math) instead of gsm8k word problems. Hendrycks "Level 1" is still 9th-grade-AMC competition math; the source allowlist (`hendrycks`, `gsm8k`, `openstax`) was too coarse for the placement quiz.
+
+**Fix:** corpus subset is now selected **per grade band**.
+
+| Component | Change |
+|-----------|--------|
+| **`agents/grade_priors.py`** | New frozen dataclass `PlacementProfile(sources: tuple[str,...], difficulty_map: dict[str, list[str]] \| None)` plus `placement_profile_for_band(band)` and `placement_profile_for_user(grade_level, age)`. The mapping: `K-2`/`3-5`/`6-8` → `("gsm8k",)` with default difficulty mapping; `9-10` → `("hendrycks", "gsm8k")` with override `easy=Level 1`, `medium=Level 1-2`, `hard=Level 2-3`; `11-12` → `("hendrycks", "openstax")` with shifted-up override; `university` → `("hendrycks",)` Level 3-5 only. Unknown band falls back to a permissive `(hendrycks, gsm8k)` default. |
+| **`db/repositories.py`** | The global `_PLACEMENT_SOURCE_ALLOWLIST` was renamed to `_PLACEMENT_DEFAULT_SOURCES` and is only used as a *fallback default*. Both `fetch_problem_for_placement` and `fetch_problem_for_placement_by_ids` now take an explicit `sources: list[str] \| None` parameter — per-band callers always pass an explicit list from `placement_profile_for_band`. |
+| **`api/onboarding.py`** | New helpers: `_difficulties_for_request(profile, logical) -> list[str]` (uses the band's override if present, else default mapping) and `_load_placement_profile(user_id) -> PlacementProfile` (loads profile, resolves grade or falls back to age). Both `placement_start` and `placement_answer` call `_load_placement_profile` once per request and pass the result through to `_pick_topic_relevant_problem`, which now takes `placement_profile` and threads `sources` + `difficulty_map`-derived `diffs` through the entire fallback chain. |
+
+**Smoke-tested band → profile mappings (confirmed before deletion):**
+
+```
+band         -> sources                      difficulty_map
+K-2/3-5/6-8  -> ['gsm8k']                    (default)
+9-10         -> ['hendrycks', 'gsm8k']       easy=L1, medium=L1-2, hard=L2-3
+11-12        -> ['hendrycks', 'openstax']    easy=L2, medium=L3, hard=L4-5
+university   -> ['hendrycks']                easy=L3, medium=L4, hard=L5
+None/unknown -> ['hendrycks', 'gsm8k']       (default)
+```
+
+```
+grade='4. évfolyam' / '4' / '4th grade'  + age=10  -> ('gsm8k', default)
+grade='9. évfolyam'                       + age=15  -> 9-10 profile
+grade='Grade 11'                          + age=17  -> 11-12 profile
+grade='University 2nd year'               + age=20  -> university profile
+grade=None                                + age=9   -> ('gsm8k', default)   [age fallback]
+grade='asdf'                              + age=11  -> ('gsm8k', default)   [age fallback to 6-8]
+grade=None                                + age=None -> ('hendrycks', 'gsm8k') [permissive default]
+```
+
+**Note on corpus dependency:** the K-8 fix relies on you having ingested gsm8k. If you only ran `python -m scripts.ingest_problems --source hendrycks`, K-8 students will fall through the five-step fallback chain and eventually serve a Hendrycks problem (better than dying). To use the per-band feature properly: `python -m scripts.ingest_problems --source gsm8k --embed`.
+
+**Live tutor RAG is unchanged** — it still pulls from the full corpus (asdiv/svamp included) because those problems are private grounding context, not shown verbatim. The band-source filter applies *only* to the placement quiz.
+
 **Resolver behavior** (confirmed in a throwaway script before deletion):
 
 ```

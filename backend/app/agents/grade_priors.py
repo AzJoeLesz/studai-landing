@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -170,6 +171,98 @@ def band_for_age(age: int | None) -> str | None:
     if age <= 18:
         return "11-12"
     return "university"
+
+
+# ---------------------------------------------------------------------------
+# Placement profile (which corpus subset is age-appropriate?)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlacementProfile:
+    """Defines which corpus subset to draw placement-quiz problems from.
+
+    Why per-band: the global source allowlist
+    (``hendrycks``/``gsm8k``/``openstax``) was too coarse for the
+    placement quiz. Hendrycks "Level 1" is still 9th-grade AMC
+    competition math — way above a 4th grader. So the placement
+    quiz now picks sources by band:
+
+        K-2 / 3-5 / 6-8  -> gsm8k only (grade-school word problems)
+        9-10             -> hendrycks (Levels 1-3) + gsm8k
+        11-12            -> hendrycks (Levels 2-5) + openstax
+        university       -> hendrycks (Levels 3-5)
+
+    `difficulty_map`, when not None, overrides the default
+    `mastery.corpus_difficulties_for()` mapping. We override for
+    bands where Hendrycks dominates because "easy/medium/hard" mean
+    very different things inside vs outside Hendrycks: an "easy"
+    Hendrycks problem (Level 1) is still a hard 9th-grade problem.
+    """
+
+    sources: tuple[str, ...]
+    difficulty_map: dict[str, list[str]] | None = None
+
+
+_DEFAULT_PROFILE = PlacementProfile(
+    sources=("hendrycks", "gsm8k"),
+    difficulty_map=None,
+)
+
+
+def placement_profile_for_band(band: str | None) -> PlacementProfile:
+    """Pick the right corpus subset for a student of `band`.
+
+    Unknown / missing band -> a permissive default that still excludes
+    the noisy synthetic datasets (asdiv, svamp, mawps).
+    """
+    if band in ("K-2", "3-5", "6-8"):
+        # Grade school. Hendrycks at any difficulty is too advanced.
+        return PlacementProfile(sources=("gsm8k",), difficulty_map=None)
+    if band == "9-10":
+        return PlacementProfile(
+            sources=("hendrycks", "gsm8k"),
+            difficulty_map={
+                "easy":   ["Level 1"],
+                "medium": ["Level 1", "Level 2"],
+                "hard":   ["Level 2", "Level 3"],
+            },
+        )
+    if band == "11-12":
+        return PlacementProfile(
+            sources=("hendrycks", "openstax"),
+            difficulty_map={
+                "easy":   ["Level 2"],
+                "medium": ["Level 3"],
+                "hard":   ["Level 4", "Level 5"],
+            },
+        )
+    if band == "university":
+        return PlacementProfile(
+            sources=("hendrycks",),
+            difficulty_map={
+                "easy":   ["Level 3"],
+                "medium": ["Level 4"],
+                "hard":   ["Level 5"],
+            },
+        )
+    return _DEFAULT_PROFILE
+
+
+def placement_profile_for_user(
+    grade_level: str | None, age: int | None
+) -> PlacementProfile:
+    """Convenience: profile from whatever the student gave us.
+
+    Resolution order: parse `grade_level` -> band; else `age` -> band;
+    else default profile. Mirrors `grade_priors_seed`.
+    """
+    resolved = resolve_grade_band(grade_level)
+    if resolved:
+        _, band = resolved
+        return placement_profile_for_band(band)
+    band = band_for_age(age)
+    return placement_profile_for_band(band)
 
 
 @lru_cache(maxsize=64)
