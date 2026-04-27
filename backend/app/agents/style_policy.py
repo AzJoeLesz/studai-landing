@@ -23,8 +23,8 @@ from typing import Literal
 
 from app.agents.grade_priors import (
     canonicalize_topic,
-    expected_mastery,
     resolve_grade_band,
+    topic_band_status,
 )
 from app.db.schemas import Profile, SessionState, StudentProgress
 
@@ -146,11 +146,9 @@ def _example_flavor_from_pref(pref: str | None) -> ExampleFlavor | None:
 # ---------------------------------------------------------------------------
 # Register: topic-grade alignment
 # ---------------------------------------------------------------------------
-# Empirically-tuned thresholds; revisit once we have enough placement-quiz
-# data to ground them.
-_ABOVE_LEVEL_PRIOR_THRESHOLD = 0.05   # below this -> above-level
-_BELOW_LEVEL_PRIOR_THRESHOLD = 0.95   # above this -> below-level
-_REMEDIAL_MASTERY_THRESHOLD = 0.20    # mastery this low on a band-appropriate topic
+# Empirically-tuned threshold; revisit once we have enough placement-quiz
+# data to ground it.
+_REMEDIAL_MASTERY_THRESHOLD = 0.20  # mastery this low on a band-appropriate topic
 
 
 def _register_for(
@@ -162,18 +160,26 @@ def _register_for(
 ) -> Register:
     """Decide the conversational register from topic vs grade vs mastery.
 
-    The "3rd grader asks about quadratics" rule lives here.
+    Uses `topic_band_status` to distinguish "above level" (topic
+    appears only in higher bands) from "below level" (topic appears
+    only in lower bands). The previous implementation used a prior
+    threshold which conflated the two -- a 12th grader asking "what
+    is 7 + 8?" was wrongly classified as `above_level_exploration`
+    because addition isn't in the 11-12 priors. Now it correctly
+    becomes `below_level_warmup`.
     """
     if not current_topic:
         return "at_level"
     canon = canonicalize_topic(current_topic)
     if not canon:
         return "at_level"
-    prior = expected_mastery(canon, curriculum, band)
-    if prior <= _ABOVE_LEVEL_PRIOR_THRESHOLD:
+    status = topic_band_status(canon, curriculum, band)
+    if status == "above_level":
         return "above_level_exploration"
-    if prior >= _BELOW_LEVEL_PRIOR_THRESHOLD:
+    if status == "below_level":
         return "below_level_warmup"
+    # at_level (or unknown) -- maybe remedial if mastery on this topic
+    # is unusually low for someone at this band.
     if (
         progress_for_topic is not None
         and progress_for_topic.mastery_score < _REMEDIAL_MASTERY_THRESHOLD
@@ -318,12 +324,93 @@ def derive_directives(
 # ---------------------------------------------------------------------------
 # Prompt block formatting
 # ---------------------------------------------------------------------------
+
+# When the register is anything other than `at_level`, we INLINE the
+# strict recipe into the directives block instead of relying on the
+# model to remember the corresponding section in the system prompt.
+# Recency bias on long prompts (especially for gpt-4o-mini) means the
+# model tends to follow instructions placed close to the user message
+# more reliably than instructions buried earlier. Without the inline
+# recipe, a 4th grader who explicitly asks "I want to do math about
+# parabolas" gets served `y = ax^2 + bx + c` because the strict
+# recipe is 6000+ tokens upstream and the immediate "do math" request
+# wins.
+#
+# See `prompts/tutor_v3.txt` for the canonical, fuller version of these
+# recipes -- the inline copies below are tightened versions of those
+# rules, intentionally short so they fit at the top of attention.
+_INLINE_RECIPES: dict[Register, str] = {
+    "above_level_exploration": (
+        "REGISTER RULES — above_level_exploration (the topic is well\n"
+        "above this student's grade). FOLLOW EXACTLY:\n"
+        "  * You are a friendly explainer here, NOT a tutor solving "
+        "problems.\n"
+        "  * Validate the curiosity warmly and give ONE concrete\n"
+        "    intuition in plain English (everyday analogies — a thrown\n"
+        "    ball, a bridge, a slide). 3-5 sentences MAX for the whole\n"
+        "    reply.\n"
+        "  * NEVER write equations with variables (no `y = ax^2 + bx + c`,\n"
+        "    no `h(t)`, no `f(x)`). NEVER use generic constants `a`, `b`,\n"
+        "    `c`, `n`. Concrete numbers in plain English only, sparingly.\n"
+        "  * NEVER pose a practice problem, even when the student\n"
+        "    explicitly asks for one. If the student says 'let's solve\n"
+        "    a problem', 'I want to do math', 'give me a problem', or\n"
+        "    similar -- you MUST decline kindly and redirect:\n"
+        "        'That kind of problem is something we usually start in\n"
+        "         high school, because it needs a few pieces you'll\n"
+        "         learn first. Want me to show you what those pieces\n"
+        "         look like? Or we can do a problem from your grade\n"
+        "         right now.'\n"
+        "  * NEVER ask Socratic / 'your turn' questions. Offer-style\n"
+        "    questions ('want to hear more about X?') are fine."
+    ),
+    "below_level_warmup": (
+        "REGISTER RULES — below_level_warmup (the topic is well below\n"
+        "this student's grade). Treat as quick review or playful\n"
+        "warm-up. Do not dwell. Answer concisely without re-teaching\n"
+        "from scratch."
+    ),
+    "remedial": (
+        "REGISTER RULES — remedial (the student is missing\n"
+        "prerequisite knowledge). Be patient and warm; no shame; fill\n"
+        "in the gap before proceeding. Use micro steps."
+    ),
+}
+
+
 def format_directives_block(directives: StyleDirectives) -> str:
     lines = [
         "STYLE DIRECTIVES (private — follow exactly, do not recite):",
     ]
     lines.extend(directives.to_prompt_lines())
+    inline = _INLINE_RECIPES.get(directives.register)
+    if inline:
+        lines.append("")
+        lines.append(inline)
     return "\n".join(lines)
+
+
+def should_suppress_grounding(directives: StyleDirectives) -> bool:
+    """Whether to drop the RAG layers (problem bank / OpenStax / annotations)
+    for this turn.
+
+    When the register is non-default the student isn't being TUTORED
+    on this topic -- they're just exploring (above), warming up
+    (below), or being remediated. The retrieved problem-bank items
+    and textbook excerpts are at the LEVEL OF THE TOPIC, not the
+    student. Showing the model a Hendrycks Level-2 quadratic worked
+    solution while telling it "talk to a 4th grader at intuition
+    level only" puts the model in conflict -- it tends to mirror the
+    private context.
+
+    So: when register is above_level_exploration or below_level_warmup,
+    skip the RAG injection. Remedial keeps it (the student SHOULD be
+    learning this topic; we're just slowing down).
+    """
+    return directives.register in (
+        "above_level_exploration",
+        "below_level_warmup",
+    )
 
 
 def format_progress_block(
@@ -385,6 +472,7 @@ __all__ = [
     "format_directives_block",
     "format_progress_block",
     "format_session_state_block",
+    "should_suppress_grounding",
 ]
 
 

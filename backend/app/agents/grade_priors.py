@@ -296,14 +296,73 @@ def expected_mastery(
 ) -> float:
     """How mastered should a 'typical' student of (curriculum, band) be on `topic`?
 
-    Returns 0.0 if the topic is not in the curriculum at that band, which
-    we interpret as 'above-level' from the student's perspective. Used by
-    the topic-grade alignment check in `style_policy.derive_directives`.
+    Returns 0.0 if the topic is not in the curriculum at that band.
+    Note: 0.0 here is ambiguous on its own — it could mean either
+    "above level (not yet introduced)" or "below level (assumed
+    mastered, dropped from new-topics list)". Use `topic_band_status`
+    for that distinction; this function only tells you the prior.
     """
     canon = canonicalize_topic(topic)
     if not (canon and curriculum and band):
         return 0.0
     return float(priors_for(curriculum, band).get(canon, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# Topic vs band relationship
+# ---------------------------------------------------------------------------
+_BANDS_ORDER: tuple[str, ...] = (
+    "K-2", "3-5", "6-8", "9-10", "11-12", "university",
+)
+
+
+def topic_band_status(
+    topic: str | None,
+    curriculum: str | None,
+    band: str | None,
+) -> str:
+    """Where does this topic sit relative to the student's band?
+
+    Returns one of:
+      * `"at_level"` -- the topic appears in the student's band's
+        priors (it is part of their current curriculum).
+      * `"above_level"` -- the topic appears ONLY in higher bands
+        (e.g. 4th grader asking about quadratic functions).
+      * `"below_level"` -- the topic appears ONLY in lower bands
+        (e.g. 12th grader asking about basic addition).
+      * `"unknown"` -- the topic isn't in the priors table for this
+        curriculum at all (caller should treat as `at_level`).
+
+    Why this matters: my previous code used `expected_mastery == 0.0`
+    as a proxy for "above level". That was wrong -- a topic gets a
+    prior of 0.0 in two opposite cases: (a) it hasn't been introduced
+    yet at that band (above), and (b) it was introduced earlier and
+    dropped from the new-topics list (below). A 12th grader asking
+    "what is 7 + 8?" was incorrectly getting `above_level_exploration`
+    because addition isn't in the 11-12 priors. This function fixes
+    that by walking the band order.
+    """
+    canon = canonicalize_topic(topic)
+    if not (canon and curriculum and band) or band not in _BANDS_ORDER:
+        return "unknown"
+    student_idx = _BANDS_ORDER.index(band)
+
+    if canon in priors_for(curriculum, band):
+        return "at_level"
+
+    in_above = any(
+        canon in priors_for(curriculum, _BANDS_ORDER[i])
+        for i in range(student_idx + 1, len(_BANDS_ORDER))
+    )
+    in_below = any(
+        canon in priors_for(curriculum, _BANDS_ORDER[i])
+        for i in range(0, student_idx)
+    )
+    if in_above:
+        return "above_level"
+    if in_below:
+        return "below_level"
+    return "unknown"
 
 
 @lru_cache(maxsize=1)

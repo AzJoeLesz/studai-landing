@@ -155,28 +155,56 @@ def _build_context(
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
-    Order (matches the "PRIVATE CONTEXT BLOCKS YOU MAY RECEIVE" section
-    in tutor_v3.txt):
+    System-message order (designed for gpt-4o-mini's recency bias --
+    the most action-relevant block, the STYLE DIRECTIVES, sits LAST
+    among the system messages, immediately before the chat history):
+
       1. Persona (CURRENT_TUTOR_PROMPT)
       2. Profile snippet
-      3. Style directives (Phase 9B) -- includes the `register` decision
-         which is computed from the topic of THIS message (live_topic),
-         not just from the previous turn's session_state.
-      4. Student progress (Phase 9A/9D)
-      5. Session state (Phase 9A)
-      6. Grounding L1 (problem RAG)
-      7. Grounding L2 (OpenStax)
-      8. Grounding L3 (annotations)
-      9. Recent history (truncated; running summary covers older turns)
+      3. Student progress (Phase 9A/9D)
+      4. Session state (Phase 9A)
+      5. Grounding L1 (problem RAG)        -- skipped when register is
+      6. Grounding L2 (OpenStax)              non-default (the textbook
+      7. Grounding L3 (annotations)           material would fight the
+                                              register's intent)
+      8. Style directives + inline recipe  -- LAST system message
+      9. Recent history
      10. New user turn
 
+    Why directives last: when a 4th grader explicitly asks "I want to
+    do math about parabolas", we need the strict "above-level
+    exploration -- decline problem requests" rule to be the FRESHEST
+    instruction in context. Burying it 6000 tokens upstream lets
+    gpt-4o-mini get pulled toward the user's framing.
+
+    Why RAG-suppression for non-default registers: the retrieval
+    pipeline finds problems and textbook excerpts at the LEVEL OF THE
+    TOPIC, not the student. Showing the model a Hendrycks Level-2
+    quadratic worked solution while telling it "talk to a 4th grader
+    at intuition level only" puts the model in conflict.
+
     `live_topic` is the topic-classifier's call on the current user
-    message. Passing it lets the register check
-    (`above_level_exploration` etc.) fire on turn 1 of a fresh session,
-    rather than waiting for the post-turn extractor to populate
-    `session_state.current_topic` after turn 1 completes.
+    message. Passing it lets the register check fire on turn 1 of a
+    fresh session.
     """
     settings = get_settings()
+
+    # Compute directives FIRST so we can use them to gate other blocks.
+    directives = (
+        style_policy.derive_directives(
+            profile=profile,
+            session_state=session_state,
+            top_progress=progress,
+            live_topic=live_topic,
+        )
+        if settings.style_policy_enabled
+        else None
+    )
+    suppress_grounding = (
+        directives is not None
+        and style_policy.should_suppress_grounding(directives)
+    )
+
     system_messages: list[MessageInput] = [
         MessageInput(role="system", content=CURRENT_TUTOR_PROMPT),
     ]
@@ -184,20 +212,6 @@ def _build_context(
     if profile_snippet:
         system_messages.append(
             MessageInput(role="system", content=profile_snippet)
-        )
-
-    if settings.style_policy_enabled:
-        directives = style_policy.derive_directives(
-            profile=profile,
-            session_state=session_state,
-            top_progress=progress,
-            live_topic=live_topic,
-        )
-        system_messages.append(
-            MessageInput(
-                role="system",
-                content=style_policy.format_directives_block(directives),
-            )
         )
 
     if settings.progress_block_enabled:
@@ -214,14 +228,27 @@ def _build_context(
                 MessageInput(role="system", content=state_block)
             )
 
-    g = grounding or GroundingContext()
-    for snippet in (
-        g.problem_reference,
-        g.openstax_excerpts,
-        g.teaching_annotations,
-    ):
-        if snippet:
-            system_messages.append(MessageInput(role="system", content=snippet))
+    if not suppress_grounding:
+        g = grounding or GroundingContext()
+        for snippet in (
+            g.problem_reference,
+            g.openstax_excerpts,
+            g.teaching_annotations,
+        ):
+            if snippet:
+                system_messages.append(
+                    MessageInput(role="system", content=snippet)
+                )
+
+    # Directives LAST so they're the freshest system instruction the
+    # model sees before the user message.
+    if directives is not None:
+        system_messages.append(
+            MessageInput(
+                role="system",
+                content=style_policy.format_directives_block(directives),
+            )
+        )
 
     recent = history[-max_history:]
     return [
@@ -288,6 +315,16 @@ async def run_tutor_turn(
         p = grounding.problem_reference
         o = grounding.openstax_excerpts
         a = grounding.teaching_annotations
+        # Style-policy preview (separate from the actual context-build
+        # below) so the log shows what register the directives layer
+        # decided on for this turn -- the single most useful debug
+        # signal when above_level_exploration isn't firing as expected.
+        preview_directives = style_policy.derive_directives(
+            profile=profile,
+            session_state=session_state,
+            top_progress=progress,
+            live_topic=topic_classification.topic,
+        )
         print(
             "tutor_grounding | "
             f"session_id={session_id} | "
@@ -297,6 +334,11 @@ async def run_tutor_turn(
             f"L1_on={bool(p and p.strip())} "
             f"L2_on={bool(o and o.strip())} "
             f"L3_on={bool(a and a.strip())} | "
+            f"live_topic={topic_classification.topic or 'none'} "
+            f"sim={topic_classification.similarity:.2f} | "
+            f"register={preview_directives.register} "
+            f"vocab={preview_directives.vocabulary_level} "
+            f"step={preview_directives.step_size} | "
             f"L1_ids={','.join(grounding.problem_hit_ids) or 'none'} "
             f"L3_annotation_ids={','.join(grounding.annotation_hit_ids) or 'none'}",
             flush=True,

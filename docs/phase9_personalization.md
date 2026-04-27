@@ -165,6 +165,44 @@ Two root causes, both fixed:
 
 **Pending follow-up:** "parabolas" itself isn't in `grade_priors.json` because it's an alias / informal name for "quadratic functions". The classifier handles this via centroid similarity, but explicitly adding aliases like `"parabolas" → "quadratic functions"` to `topic_aliases` would tighten the match and reduce reliance on embedding similarity. Defer until we have more telemetry on what live messages actually look like.
 
+### Onboarding iteration #6 (above-level enforcement: structural fixes)
+
+Iteration #5's prompt strengthening *helped* (turn 1 of "I'd like to talk about parabolas" came out correctly intuitive — basketball/thrown-ball, no notation), but turn 2 ("Where do they come from? I want to do math related to parabolas") still produced `y = ax^2 + bx + c` with named constants `a`, `b`, `c`. Diagnosis: the prompt was right in spirit but losing to three structural problems.
+
+| Problem | Fix |
+|---------|-----|
+| **The strict above-level recipe was buried in the middle of a 13.7k-char system prompt.** With recency bias on gpt-4o-mini's instruction-following, the immediate "I want to do math" request beats out a rule sitting 6000 tokens upstream. | New `_INLINE_RECIPES` dict in `style_policy.py`. When the register is non-default (`above_level_exploration` / `below_level_warmup` / `remedial`), `format_directives_block` appends the FULL strict recipe inline. So the directives system message now contains both the bucket name AND the corresponding rules — no remembering required. |
+| **System-message order put STYLE DIRECTIVES early, then RAG (long), then history.** The freshest system instruction the model saw before the user message was usually a textbook excerpt or worked solution, not the directives. | `tutor._build_context` reordered: persona → profile → progress → state → grounding → **directives (last)** → history → user. Directives are now the freshest system instruction. |
+| **RAG was actively fighting the directive.** When a 4th grader asks about parabolas, retrieval pulls in OpenStax algebra-textbook excerpts about `y = ax^2 + bx + c`. The model sees that as private "ground truth" and mirrors it, even with the right register set. | New `style_policy.should_suppress_grounding(directives) -> bool`. Returns True for `above_level_exploration` and `below_level_warmup`. `tutor._build_context` skips injecting L1/L2/L3 grounding when this is True. **Live tutoring at_level and remedial both keep grounding** — those modes still benefit from corpus context. |
+| **Above-level vs below-level conflated.** A 12th grader asking "what is 7 + 8?" was being classified as `above_level_exploration` because addition isn't in the 11-12 priors band → `expected_mastery == 0.0` → register = above. But it should be `below_level_warmup`. | New `topic_band_status(topic, curriculum, band) -> "at_level" \| "above_level" \| "below_level" \| "unknown"` in `grade_priors.py`. Walks `_BANDS_ORDER` and checks where the topic actually appears. `style_policy._register_for` now uses this instead of the prior threshold. |
+| **No alias for "parabolas"** — relied entirely on classifier centroid similarity. Worked, but was the soft underbelly of the chain. | Added `parabolas`, `parabola`, `parabolák`, `parabolák matematika` to `topic_aliases`. Now `canonicalize_topic("parabolas") -> "quadratic functions"` deterministically. |
+| **Couldn't tell from logs whether the live classifier was firing.** | `grounding_debug_log` now also prints `live_topic`, classifier `sim`, computed `register`, plus `vocab` and `step` from the directives. Set `GROUNDING_DEBUG_LOG=true` once on Railway and tail the `tutor_grounding |` lines to verify. |
+
+**Smoke-tested register decisions** (10 scenarios, throwaway script deleted):
+
+| Scenario | Result |
+|----------|--------|
+| 4th grader (anxious) asks `parabolas` | `above_level_exploration` + grounding suppressed + inline recipe |
+| 12th grader asks `addition` (was wrongly above-level) | `below_level_warmup` + grounding suppressed |
+| 4th grader asks `exponents` | `above_level_exploration` |
+| 4th grader asks `fractions` | `at_level` (in 3-5 priors) |
+| 6th grader asks `quadratic functions` | `above_level_exploration` |
+| 9th grader asks `quadratic functions` | `at_level` |
+| 9th grader asks `multivariable calculus` | `above_level_exploration` |
+| University asks `addition` | `below_level_warmup` |
+| 9th grader low-mastery on `linear equations` | `remedial` (grounding kept on) |
+| 4th grader, classifier returns None | `at_level` (safe fallback) |
+
+**Files changed:**
+- `agents/grade_priors.py` — new `topic_band_status` + `_BANDS_ORDER` constant
+- `agents/style_policy.py` — uses `topic_band_status`; new `_INLINE_RECIPES` + `should_suppress_grounding`; removed unused `expected_mastery` import + threshold constants
+- `agents/tutor.py` — system-message order rebuilt: directives last; conditional grounding suppression; `grounding_debug_log` extended
+- `data/grade_priors.json` — `parabolas` aliases added
+
+**Open follow-ups (deferred):**
+- The post-turn extractor stores `session_state.current_topic` lowercased but NOT alias-folded. Reads through `canonicalize_topic` so it works either way, but writes would be cleaner if folded too.
+- `gpt-4o-mini` is the chat model. For demo polish, bumping to `gpt-4o` (env: `OPENAI_MODEL=gpt-4o`) gives noticeably tighter rule-following at ~10× per-token cost. Worth trying for investor pitches; not for production until cost matters less.
+
 **Resolver behavior** (confirmed in a throwaway script before deletion):
 
 ```
