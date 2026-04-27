@@ -154,19 +154,21 @@ Numbered phases for continuity across sessions. **Effort** assumes solo founder 
 
 **Effort:** 1.5–2 weeks (mostly scripts + ingestion time) — **Ships visibly:** Internally yes (admin can search); external chat connection is Phase 10
 
-### Phase 9 — Student profile + session state
+### Phase 9 — Personalization & adaptation layer
 
-**Why now:** Every later phase reads from this.
+**Why now:** Every later phase reads from student state, and this is what makes the product visibly adaptive instead of "GPT with a prompt". The original "profile + session state" scope expanded during design into the full personalization spine: structured memory + a deterministic style-policy layer + a hybrid BKT+IRT mastery model + a three-layer cold-start strategy + a new tutor prompt v3. **See `docs/phase9_personalization.md` for locked decisions, math, schema sketches, deferred items, and slice-by-slice plan — that doc is the source of truth.**
 
-**Scope:**
+**Already shipped before Phase 9 began:** profile extensions (`004_profile_extensions.sql`), settings form, profile snippet weaving in the tutor prompt. Phase 9 is now everything that wasn't done.
 
-- Extend `profiles`: age, `grade_level`, interests (jsonb), goals, notes
-- New: `student_progress` — topic-level mastery (fed by Phase 12 quality loop)
-- New: `session_state` — per-session jsonb: current topic, mood signals, struggling-on-what, attempts so far
-- Backend: every chat request loads profile + session state, summarizes, includes in prompt
-- Frontend: settings page — one form (age, grade, interests)
+**Scope (sub-slices, ship in order):**
 
-**Effort:** ~1 week — **Ships visibly:** Yes — name, grade-level, age-appropriate examples
+- **9A — Memory plumbing.** New tables `session_state`, `student_progress`. Post-turn LLM extractor (fire-and-forget, like the answer-leak guard). Tutor prompt v3 reads new system blocks. Adds `share_progress_with_parents` consent flag for Phase 13.
+- **9B — Style directives + grade priors + topic-grade alignment.** Static priors table (Hungarian NAT + US Common Core). `style_policy.py` derives explicit directives from profile/state/progress. Explicit "above-level exploration" register for the 3rd-grader-asks-about-quadratics case. **First demo-able slice.**
+- **9C — Personality micro-survey at signup.** 3 multiple-choice questions feeding style directives. Stored on `profiles`.
+- **9D — Hybrid BKT + IRT mastery.** Per-skill BKT state, IRT-modulated guess/slip from `problems.difficulty` (Pardos & Heffernan 2011 / KT-IDEM). Replaces heuristic progress writes from 9A.
+- **9E — Adaptive placement quiz** (optional onboarding skip). 5-question IRT-style staircase per declared grade. Seeds `student_progress` with `evidence_source = 'placement'`.
+
+**Effort:** ~3–4 weeks for 9A–9D; +1 week for 9E. — **Ships visibly:** 9B onwards yes — same student message produces visibly different replies across grade/personality/mastery profiles.
 
 ### Phase 10 — Authenticated solution graphs (the moat)
 
@@ -273,6 +275,7 @@ Numbered phases for continuity across sessions. **Effort** assumes solo founder 
 - `backend/README.md` — API layout, env, how a chat turn flows
 - `backend/evals/README.md` — running evaluations and reports
 - `sql/*.sql` — database migrations (run in Supabase in order, including `005_teaching_material_and_annotations.sql`)
+- `docs/phase9_personalization.md` — full Phase 9 plan: locked decisions, hybrid BKT+IRT mastery model, cold-start strategy, style-policy architecture, schema sketches, deferred items. Read this when picking up Phase 9 work in a new session.
 
 ---
 

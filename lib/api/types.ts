@@ -28,3 +28,22 @@ export interface SessionWithMessages {
   session: TutorSession;
   messages: Message[];
 }
+
+/**
+ * Mirror of `backend/app/db/schemas.py::StudentProgress`. Returned by
+ * the placement-quiz summary endpoint so the post-quiz screen can show
+ * the student where they landed.
+ */
+export interface StudentProgress {
+  user_id: string;
+  topic: string;
+  mastery_score: number;
+  evidence_count: number;
+  evidence_source:
+    | "prior"
+    | "placement"
+    | "extractor"
+    | "rating"
+    | "step_check";
+  last_seen_at: string | null;
+}

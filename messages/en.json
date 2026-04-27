@@ -72,6 +72,8 @@
     "description": "Tell the AI a bit about yourself. The more you share, the better it can adapt to you. Everything is optional.",
     "sectionAboutYou": "About you",
     "sectionLearning": "Learning",
+    "sectionStyle": "How you like to learn",
+    "sectionPrivacy": "Privacy",
     "displayNameLabel": "Display name",
     "displayNamePlaceholder": "What should we call you",
     "displayNameHelp": "How the AI will address you.",
@@ -86,10 +88,68 @@
     "learningGoalsPlaceholder": "e.g. preparing for university entrance exams",
     "notesLabel": "Anything else",
     "notesPlaceholder": "Anything you'd like the AI to keep in mind",
+    "shareProgressLabel": "Let parents see my progress",
+    "shareProgressHelp": "Off by default. When on, a linked parent can see what topics you've worked on. (Parent dashboard arrives in a later release.)",
     "save": "Save",
     "saving": "Saving...",
     "saved": "Settings saved.",
     "loadError": "Could not load your settings."
+  },
+  "onboarding": {
+    "title": "Let's get to know you",
+    "description": "Three quick questions so the tutor can adapt to you. Takes about a minute.",
+    "skip": "Skip for now",
+    "skipPlacement": "Skip the quick check",
+    "next": "Next",
+    "back": "Back",
+    "saving": "Saving...",
+    "savedAndContinue": "Continue",
+    "errorSaving": "Could not save your answers. Try again.",
+    "errorLoading": "Could not load this step. Try again.",
+    "personality": {
+      "title": "How do you like to learn?",
+      "q1": {
+        "prompt": "When you're stuck on a problem, what helps most?",
+        "fastHints": "Give me a hint quickly",
+        "figureOut": "Let me figure it out myself",
+        "workedExample": "Show me a similar example"
+      },
+      "q2": {
+        "prompt": "Math feels mostly...",
+        "curious": "Fun and interesting",
+        "neutral": "Fine, just a subject",
+        "anxious": "Hard, I get a bit anxious"
+      },
+      "q3": {
+        "prompt": "What kind of problems do you like best?",
+        "story": "Word problems with stories",
+        "pure": "Pure equations and numbers",
+        "visual": "Visual and geometry problems"
+      }
+    },
+    "placement": {
+      "title": "Quick check (optional)",
+      "intro": "Five problems so the tutor can see roughly where you are. There's no grade — just answer your best, or skip.",
+      "start": "Take the quick check",
+      "questionLabel": "Question",
+      "of": "of",
+      "topicLabel": "Topic",
+      "difficultyLabel": "Difficulty",
+      "yourAnswer": "Your answer",
+      "answerPlaceholder": "Type your answer (or 'skip' if you don't know)",
+      "submit": "Submit answer",
+      "submitting": "Checking...",
+      "iDontKnow": "I don't know",
+      "completedTitle": "All done!",
+      "completedBody": "Thanks — the tutor is now calibrated to you. You can revisit the quick check from Settings any time.",
+      "goToTutor": "Open the tutor",
+      "alreadyCompleted": "You've already done the quick check. You can re-take it later if you want."
+    },
+    "complete": {
+      "title": "You're all set",
+      "description": "Anything you've shared is in Settings, where you can edit it any time.",
+      "openTutor": "Open the tutor"
+    }
   },
   "footer": {
     "soon": "StudAI will soon do more — sessions, settings, and a calm, patient AI math tutor."

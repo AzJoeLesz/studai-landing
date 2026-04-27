@@ -1,16 +1,18 @@
 """Tutor orchestration.
 
 This is the brain of StudAI. Today it is a single function: load history,
-append user message, stream an LLM reply, persist the reply. When we add
-tools (SymPy for step-by-step algebra, a problem bank, etc.) or split
-tutoring into sub-agents, only this file's body changes — the API layer
-keeps calling `run_tutor_turn(session_id, user_id, user_message)` and
-getting back a token stream.
+profile, session state, and progress in parallel; assemble the system
+context (persona + profile + style directives + progress + session state
++ RAG layers); stream an LLM reply; persist the reply; fire post-turn
+side effects (answer-leak guard + state extractor) without blocking.
 
 Design rules for this file:
   * The API layer must never import from `llm/` or `prompts/` directly.
   * Database access goes through `db.repositories`.
   * This is the ONLY place that knows about the tutor's persona.
+  * The order of system messages is intentional. Do not reorder without
+    updating the v3 prompt's "PRIVATE CONTEXT BLOCKS YOU MAY RECEIVE"
+    section.
 """
 
 import asyncio
@@ -18,10 +20,17 @@ import logging
 from typing import AsyncIterator
 from uuid import UUID
 
+from app.agents import state_updater, style_policy
 from app.agents.retrieval import GroundingContext, build_grounding_context
 from app.core.config import get_settings
 from app.db import repositories as repo
-from app.db.schemas import Message, MessageInput, Profile
+from app.db.schemas import (
+    Message,
+    MessageInput,
+    Profile,
+    SessionState,
+    StudentProgress,
+)
 from app.llm import get_llm_client
 from app.prompts import CURRENT_TUTOR_PROMPT
 
@@ -53,12 +62,7 @@ Reply with exactly one word: YES or NO.
 async def _check_answer_leak(
     user_message: str, assistant_reply: str, session_id: UUID
 ) -> None:
-    """Fire-and-forget guard: checks if the reply leaked the answer.
-
-    Runs after the response has already been streamed to the user, so it
-    adds zero latency to the chat. Its purpose is monitoring — the logs
-    let us spot prompt weaknesses and iterate.
-    """
+    """Fire-and-forget guard: checks if the reply leaked the answer."""
     try:
         llm = get_llm_client()
         probe = [
@@ -143,23 +147,67 @@ def _build_context(
     user_message: str,
     max_history: int,
     profile: Profile | None,
+    session_state: SessionState | None,
+    progress: list[StudentProgress] | None,
     grounding: GroundingContext | None = None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
+    Order (matches the "PRIVATE CONTEXT BLOCKS YOU MAY RECEIVE" section
+    in tutor_v3.txt):
+      1. Persona (CURRENT_TUTOR_PROMPT)
+      2. Profile snippet
+      3. Style directives (Phase 9B)
+      4. Student progress (Phase 9A/9D)
+      5. Session state (Phase 9A)
+      6. Grounding L1 (problem RAG)
+      7. Grounding L2 (OpenStax)
+      8. Grounding L3 (annotations)
+      9. Recent history (truncated; running summary covers older turns)
+     10. New user turn
+
     Strategy v1: system prompt + last N messages + the new user turn.
-    Strategy v2 (later): system prompt + running summary + last N messages.
+    Strategy v2 (Phase 9A): the running `session_state.summary` is
+    always present in the SESSION STATE block and effectively replaces
+    older raw history past the truncation window.
     """
+    settings = get_settings()
     system_messages: list[MessageInput] = [
         MessageInput(role="system", content=CURRENT_TUTOR_PROMPT),
     ]
     profile_snippet = _format_profile_snippet(profile)
     if profile_snippet:
-        # Separate system message keeps the persona prompt frozen and the
-        # profile context easy to inspect/replace independently.
         system_messages.append(
             MessageInput(role="system", content=profile_snippet)
         )
+
+    if settings.style_policy_enabled:
+        directives = style_policy.derive_directives(
+            profile=profile,
+            session_state=session_state,
+            top_progress=progress,
+        )
+        system_messages.append(
+            MessageInput(
+                role="system",
+                content=style_policy.format_directives_block(directives),
+            )
+        )
+
+    if settings.progress_block_enabled:
+        progress_block = style_policy.format_progress_block(progress)
+        if progress_block:
+            system_messages.append(
+                MessageInput(role="system", content=progress_block)
+            )
+
+    if settings.session_state_block_enabled:
+        state_block = style_policy.format_session_state_block(session_state)
+        if state_block:
+            system_messages.append(
+                MessageInput(role="system", content=state_block)
+            )
+
     g = grounding or GroundingContext()
     for snippet in (
         g.problem_reference,
@@ -190,26 +238,28 @@ async def run_tutor_turn(
     """Execute one conversational turn.
 
     Order of operations (important):
-      1. Load existing history + the student's profile in parallel -- both
-         are read-only and feed the LLM context.
-      2. Persist the user's message. Even if the LLM call fails afterwards,
-         we don't lose what the student wrote.
+      1. Load existing history + profile + session_state + progress +
+         grounding in parallel — all are read-only and feed the LLM
+         context.
+      2. Persist the user's message. Even if the LLM call fails, we
+         don't lose what the student wrote.
       3. Stream tokens from the LLM, yielding each one to the caller.
       4. After the stream ends cleanly, persist the assembled assistant
          reply in full.
-      5. Fire the answer-leak guard asynchronously (no latency impact).
-
-    Returns an async generator of string tokens. Caller (the API route) is
-    responsible for framing them into the wire format (SSE, WebSocket, etc.).
+      5. Fire two fire-and-forget tasks:
+            a) Answer-leak guard (existing).
+            b) Post-turn state extractor (Phase 9A). Updates
+               `session_state` + `student_progress` from the latest
+               exchange. Zero latency impact on the user-visible stream.
     """
     settings = get_settings()
     llm = get_llm_client()
 
-    # All three reads are independent -- pull them in parallel so retrieval
-    # latency overlaps with profile + history loads.
-    history, profile, grounding = await asyncio.gather(
+    history, profile, session_state, progress, grounding = await asyncio.gather(
         asyncio.to_thread(repo.list_messages, session_id),
         asyncio.to_thread(repo.get_profile, user_id),
+        asyncio.to_thread(repo.get_session_state, session_id),
+        asyncio.to_thread(repo.get_top_progress, user_id, limit=8),
         build_grounding_context(user_message, "en"),
     )
     await asyncio.to_thread(
@@ -239,6 +289,8 @@ async def run_tutor_turn(
         user_message,
         settings.tutor_max_history_messages,
         profile,
+        session_state,
+        progress,
         grounding,
     )
 
@@ -260,13 +312,19 @@ async def run_tutor_turn(
                 _check_answer_leak(user_message, full_reply, session_id)
             )
 
+        if settings.state_updater_enabled:
+            asyncio.create_task(
+                state_updater.update_state_after_turn(
+                    session_id=session_id,
+                    user_id=user_id,
+                    user_message=user_message,
+                    assistant_reply=full_reply,
+                )
+            )
+
 
 async def generate_session_title(first_user_message: str) -> str:
-    """Derive a short title from the first user message.
-
-    Called once, right after the first assistant reply finishes. Failures
-    here are non-fatal — a sessionless title just stays NULL.
-    """
+    """Derive a short title from the first user message."""
     settings = get_settings()
     llm = get_llm_client()
 

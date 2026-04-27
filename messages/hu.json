@@ -72,6 +72,8 @@
     "description": "Mesélj egy kicsit magadról az AI-nak. Minél többet osztasz meg, annál jobban tud hozzád igazodni. Minden mező nem kötelező.",
     "sectionAboutYou": "Magadról",
     "sectionLearning": "Tanulás",
+    "sectionStyle": "Hogyan szeretsz tanulni",
+    "sectionPrivacy": "Adatvédelem",
     "displayNameLabel": "Megjelenítendő név",
     "displayNamePlaceholder": "Ahogy hívnak",
     "displayNameHelp": "Így fog szólítani az AI.",
@@ -86,10 +88,68 @@
     "learningGoalsPlaceholder": "pl. érettségire készülök",
     "notesLabel": "Bármi más",
     "notesPlaceholder": "Bármi, amit szeretnél, hogy az AI észben tartson",
+    "shareProgressLabel": "A szüleim láthatják, miben haladok",
+    "shareProgressHelp": "Alapértelmezetten kikapcsolva. Ha bekapcsolod, egy összekötött szülő látja majd, milyen témákon dolgoztál. (A szülői felület később érkezik.)",
     "save": "Mentés",
     "saving": "Mentés...",
     "saved": "Beállítások elmentve.",
     "loadError": "Nem sikerült betölteni a beállításokat."
+  },
+  "onboarding": {
+    "title": "Ismerkedjünk!",
+    "description": "Három gyors kérdés, hogy a korrepetitor hozzád tudjon igazodni. Kb. egy perc.",
+    "skip": "Most kihagyom",
+    "skipPlacement": "Kihagyom a gyors ellenőrzést",
+    "next": "Tovább",
+    "back": "Vissza",
+    "saving": "Mentés...",
+    "savedAndContinue": "Folytatás",
+    "errorSaving": "Nem sikerült elmenteni a válaszokat. Próbáld újra.",
+    "errorLoading": "Nem sikerült betölteni ezt a lépést. Próbáld újra.",
+    "personality": {
+      "title": "Hogyan szeretsz tanulni?",
+      "q1": {
+        "prompt": "Amikor elakadsz egy feladatnál, mi segít a legjobban?",
+        "fastHints": "Adj gyorsan egy tippet",
+        "figureOut": "Hadd jöjjek rá magamtól",
+        "workedExample": "Mutass egy hasonló példát"
+      },
+      "q2": {
+        "prompt": "A matek számodra főleg...",
+        "curious": "Érdekes és szórakoztató",
+        "neutral": "Csak egy tantárgy",
+        "anxious": "Nehéz, kicsit szorongok tőle"
+      },
+      "q3": {
+        "prompt": "Milyen feladatokat szeretsz a legjobban?",
+        "story": "Szöveges feladatokat, történettel",
+        "pure": "Tiszta egyenleteket és számokat",
+        "visual": "Vizuális és geometriai feladatokat"
+      }
+    },
+    "placement": {
+      "title": "Gyors ellenőrzés (nem kötelező)",
+      "intro": "Öt feladat, hogy a korrepetitor lássa, körülbelül hol tartasz. Nincs jegy — válaszolj a legjobb tudásod szerint, vagy hagyd ki.",
+      "start": "Megcsinálom a gyors ellenőrzést",
+      "questionLabel": "Kérdés",
+      "of": "/",
+      "topicLabel": "Téma",
+      "difficultyLabel": "Nehézség",
+      "yourAnswer": "A válaszod",
+      "answerPlaceholder": "Írd be a válaszodat (vagy 'kihagy', ha nem tudod)",
+      "submit": "Válasz beküldése",
+      "submitting": "Ellenőrzés...",
+      "iDontKnow": "Nem tudom",
+      "completedTitle": "Készen vagy!",
+      "completedBody": "Köszi — a korrepetitor most már hozzád van igazítva. A Beállításokban bármikor újra megcsinálhatod a gyors ellenőrzést.",
+      "goToTutor": "Tovább a korrepetitorhoz",
+      "alreadyCompleted": "Már megcsináltad a gyors ellenőrzést. Később újra megcsinálhatod, ha szeretnéd."
+    },
+    "complete": {
+      "title": "Minden készen áll",
+      "description": "Amit megosztottál, megtalálod a Beállításokban, és bármikor szerkesztheted.",
+      "openTutor": "Tovább a korrepetitorhoz"
+    }
   },
   "footer": {
     "soon": "A StudAI hamarosan többet is tud majd — munkamenetek, beállítások és egy nyugodt, türelmes AI matek korrepetitor."

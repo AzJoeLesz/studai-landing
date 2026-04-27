@@ -18,6 +18,7 @@ import {
   deleteSession,
   listSessions
 } from "@/lib/api/sessions";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { TutorSession } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,7 @@ export default function SessionsPage() {
   const t = useTranslations("sessions");
   const format = useFormatter();
   const router = useRouter();
+  const supabase = getSupabaseBrowserClient();
 
   const [sessions, setSessions] = useState<TutorSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +38,31 @@ export default function SessionsPage() {
     (async () => {
       try {
         const data = await listSessions();
-        if (!cancelled) setSessions(data);
+        if (cancelled) return;
+        setSessions(data);
+
+        // First-run nudge: a brand-new account has no sessions and no
+        // personality preferences yet. Send them through onboarding so
+        // their first chat already feels personalized. Users who have
+        // any prior session (even if they later deleted preferences)
+        // are NOT redirected — that would be annoying.
+        if (data.length === 0) {
+          const { data: auth } = await supabase.auth.getUser();
+          if (cancelled || !auth.user) return;
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("preferences")
+            .eq("id", auth.user.id)
+            .maybeSingle();
+          if (cancelled) return;
+          const prefs = (profile?.preferences ?? {}) as Record<string, unknown>;
+          const hasAnyPref = Boolean(
+            prefs.hint_style || prefs.math_affect || prefs.example_flavor,
+          );
+          if (!hasAnyPref) {
+            router.replace("/dashboard/onboarding");
+          }
+        }
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof ApiError ? e.detail : t("loadError"));
@@ -47,7 +73,7 @@ export default function SessionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, supabase, router]);
 
   async function handleCreate() {
     setCreating(true);

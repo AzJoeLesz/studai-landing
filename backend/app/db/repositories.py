@@ -16,13 +16,17 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.db.schemas import (
+    EvidenceSource,
     Language,
     Message,
+    PlacementAttempt,
     Problem,
     ProblemInsert,
     ProblemSearchResult,
     Profile,
     Role,
+    SessionState,
+    StudentProgress,
     TeachingMaterialHit,
     TutorSession,
 )
@@ -34,6 +38,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------------
+_PROFILE_COLUMNS = (
+    "id,display_name,age,grade_level,interests,learning_goals,notes,"
+    "share_progress_with_parents,preferences"
+)
+
+
 def get_profile(user_id: UUID) -> Profile | None:
     """Read the current student profile. Missing rows return None.
 
@@ -44,9 +54,7 @@ def get_profile(user_id: UUID) -> Profile | None:
     sb = get_supabase_client()
     res = (
         sb.table("profiles")
-        .select(
-            "id,display_name,age,grade_level,interests,learning_goals,notes"
-        )
+        .select(_PROFILE_COLUMNS)
         .eq("id", str(user_id))
         .limit(1)
         .execute()
@@ -439,3 +447,250 @@ def upsert_problem_annotation(
         },
         on_conflict="problem_id",
     ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Session state (Phase 9A)
+# ---------------------------------------------------------------------------
+def get_session_state(session_id: UUID) -> SessionState | None:
+    """Read the per-session structured snapshot, or None if not yet written."""
+    sb = get_supabase_client()
+    res = (
+        sb.table("session_state")
+        .select("*")
+        .eq("session_id", str(session_id))
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return SessionState.model_validate(rows[0]) if rows else None
+
+
+def upsert_session_state(
+    session_id: UUID,
+    *,
+    current_topic: str | None = None,
+    mode: str | None = None,
+    attempts_count: int | None = None,
+    struggling_on: str | None = None,
+    mood_signals: dict | None = None,
+    summary: str | None = None,
+) -> None:
+    """Idempotent upsert. Pass only fields that should change.
+
+    The post-turn extractor calls this with whatever it managed to derive;
+    None values mean "leave whatever was there alone". We achieve that by
+    fetching the existing row first and merging.
+    """
+    sb = get_supabase_client()
+    existing = get_session_state(session_id)
+    payload: dict = {
+        "session_id": str(session_id),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def _merge(field: str, new_val, existing_val):
+        if new_val is not None:
+            payload[field] = new_val
+        elif existing_val is not None:
+            payload[field] = existing_val
+
+    _merge(
+        "current_topic",
+        current_topic,
+        existing.current_topic if existing else None,
+    )
+    _merge("mode", mode, existing.mode if existing else None)
+    _merge(
+        "attempts_count",
+        attempts_count,
+        existing.attempts_count if existing else 0,
+    )
+    _merge(
+        "struggling_on",
+        struggling_on,
+        existing.struggling_on if existing else None,
+    )
+    _merge(
+        "mood_signals",
+        mood_signals,
+        existing.mood_signals if existing else None,
+    )
+    _merge("summary", summary, existing.summary if existing else None)
+
+    sb.table("session_state").upsert(
+        payload, on_conflict="session_id"
+    ).execute()
+
+
+def increment_session_attempts(session_id: UUID) -> None:
+    """Atomic-ish bump for attempts_count.
+
+    `supabase-py` doesn't expose a server-side increment, so we read-then-
+    write. Acceptable here because session_state is a single-writer
+    resource per session (one extractor task per turn).
+    """
+    existing = get_session_state(session_id)
+    next_count = (existing.attempts_count if existing else 0) + 1
+    upsert_session_state(session_id, attempts_count=next_count)
+
+
+# ---------------------------------------------------------------------------
+# Student progress (Phase 9A scaffolding; 9D installs the real BKT update)
+# ---------------------------------------------------------------------------
+def get_top_progress(
+    user_id: UUID, *, limit: int = 8
+) -> list[StudentProgress]:
+    """Most-recent topics for the student, descending by `last_seen_at`.
+
+    Used to inject a compact STUDENT PROGRESS block into the tutor prompt.
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("student_progress")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .order("last_seen_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [StudentProgress.model_validate(r) for r in (res.data or [])]
+
+
+def get_progress_for_topic(
+    user_id: UUID, topic: str
+) -> StudentProgress | None:
+    sb = get_supabase_client()
+    res = (
+        sb.table("student_progress")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .eq("topic", topic)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return StudentProgress.model_validate(rows[0]) if rows else None
+
+
+def upsert_progress(
+    user_id: UUID,
+    topic: str,
+    *,
+    mastery_score: float,
+    evidence_source: EvidenceSource,
+    evidence_count: int | None = None,
+) -> None:
+    """Write a (possibly new) progress row for one topic.
+
+    Caller is responsible for computing `mastery_score` (Phase 9D's
+    `agents/mastery.py` does this via BKT-IDEM). This repo just persists.
+    """
+    sb = get_supabase_client()
+    payload: dict = {
+        "user_id": str(user_id),
+        "topic": topic,
+        "mastery_score": max(0.0, min(1.0, float(mastery_score))),
+        "evidence_source": evidence_source,
+        "last_seen_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if evidence_count is not None:
+        payload["evidence_count"] = evidence_count
+    sb.table("student_progress").upsert(
+        payload, on_conflict="user_id,topic"
+    ).execute()
+
+
+def bulk_seed_progress(
+    rows: Iterable[tuple[UUID, str, float]],
+    *,
+    evidence_source: EvidenceSource = "prior",
+) -> int:
+    """Bulk insert grade-priors-derived rows for a fresh user.
+
+    Used by the `/onboarding/seed-priors` endpoint after the student
+    submits their grade level for the first time. Won't overwrite rows
+    that already exist (on-conflict do-nothing semantics: we send the
+    same source key, which is fine to dedupe on later if needed).
+
+    For now we do upsert with the same source, which means re-running
+    seed will refresh `last_seen_at` but not clobber a higher mastery
+    that came from a placement quiz or extractor since.
+    """
+    payload = []
+    now = datetime.now(timezone.utc).isoformat()
+    for user_id, topic, mastery in rows:
+        payload.append(
+            {
+                "user_id": str(user_id),
+                "topic": topic,
+                "mastery_score": max(0.0, min(1.0, float(mastery))),
+                "evidence_source": evidence_source,
+                "last_seen_at": now,
+            }
+        )
+    if not payload:
+        return 0
+    sb = get_supabase_client()
+    # ignore_duplicates so a re-seed for the same user is a no-op rather
+    # than a regression of mastery built up since.
+    sb.table("student_progress").upsert(
+        payload, on_conflict="user_id,topic", ignore_duplicates=True
+    ).execute()
+    return len(payload)
+
+
+# ---------------------------------------------------------------------------
+# Placement quiz attempts (Phase 9E)
+# ---------------------------------------------------------------------------
+def record_placement_attempt(attempt: PlacementAttempt) -> PlacementAttempt:
+    sb = get_supabase_client()
+    payload = {
+        "user_id": str(attempt.user_id),
+        "problem_id": str(attempt.problem_id),
+        "topic": attempt.topic,
+        "difficulty": attempt.difficulty,
+        "correct": attempt.correct,
+    }
+    res = sb.table("placement_attempts").insert(payload).execute()
+    if not res.data:
+        raise RuntimeError("Failed to record placement attempt")
+    return PlacementAttempt.model_validate(res.data[0])
+
+
+def list_placement_attempts(
+    user_id: UUID, *, limit: int = 20
+) -> list[PlacementAttempt]:
+    sb = get_supabase_client()
+    res = (
+        sb.table("placement_attempts")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [PlacementAttempt.model_validate(r) for r in (res.data or [])]
+
+
+def fetch_problem_for_placement(
+    *, exclude_ids: list[UUID], filter_difficulty: str | None
+) -> Problem | None:
+    """Pick one problem for the placement staircase.
+
+    Filters by `difficulty` if provided. We avoid problems the user has
+    already seen in this placement run by excluding their IDs.
+    """
+    sb = get_supabase_client()
+    q = sb.table("problems").select(
+        "id,source,type,difficulty,problem_en,solution_en,answer,source_id,"
+        "created_at"
+    )
+    if filter_difficulty:
+        q = q.eq("difficulty", filter_difficulty)
+    if exclude_ids:
+        q = q.not_.in_("id", [str(i) for i in exclude_ids])
+    # `limit` 1 is fine; we don't need true randomness for an MVP staircase.
+    res = q.limit(1).execute()
+    rows = res.data or []
+    return Problem.model_validate(rows[0]) if rows else None

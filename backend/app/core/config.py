@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     openai_title_model: str = Field(
         default="gpt-4o-mini", description="Model used for session title generation"
     )
+    state_extractor_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Model used by the post-turn state extractor (Phase 9A). One "
+            "small JSON completion per chat turn; keep cheap by default."
+        ),
+    )
 
     # --- Tutor behavior -----------------------------------------------------
     tutor_max_history_messages: int = Field(
@@ -81,6 +88,42 @@ class Settings(BaseSettings):
     tutor_answer_guard_enabled: bool = Field(
         default=True,
         description="Run a post-reply LLM check for accidental answer leaks.",
+    )
+
+    # --- Personalization (Phase 9) -----------------------------------------
+    state_updater_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the post-turn state extractor (Phase 9A). Disable to "
+            "fall back to the cold/profile-only behavior of Phase 7-8."
+        ),
+    )
+    style_policy_enabled: bool = Field(
+        default=True,
+        description=(
+            "Inject the STYLE DIRECTIVES system block into each chat turn "
+            "(Phase 9B). Disable for an A/B test of v2-style behavior."
+        ),
+    )
+    progress_block_enabled: bool = Field(
+        default=True,
+        description=(
+            "Inject the STUDENT PROGRESS block (top topics + mastery) "
+            "into each chat turn."
+        ),
+    )
+    session_state_block_enabled: bool = Field(
+        default=True,
+        description=(
+            "Inject the SESSION STATE block (current_topic, mode, "
+            "summary, struggling_on, mood_signals) into each chat turn."
+        ),
+    )
+    state_extractor_max_tokens: int = Field(
+        default=400,
+        description=(
+            "Upper bound on the JSON output of the post-turn extractor."
+        ),
     )
 
     # --- Retrieval-augmented tutoring (Phase 10 v1) -------------------------
