@@ -339,6 +339,34 @@ def derive_directives(
 # See `prompts/tutor_v3.txt` for the canonical, fuller version of these
 # recipes -- the inline copies below are tightened versions of those
 # rules, intentionally short so they fit at the top of attention.
+# Vocabulary inline recipes. We only inline the strict variant
+# (`concrete-everyday`) -- the others (`concrete-mathy`,
+# `abstract-formal`) match the model's defaults and don't need
+# extra reinforcement. Without the inline recipe, gpt-5-mini
+# routinely smuggles letter variables ($n$, $x$) into K-5 chat
+# replies because v3's definition of `concrete-everyday` is 13k
+# characters upstream by the time it gets to the user message.
+_VOCAB_RECIPES: dict[VocabularyLevel, str] = {
+    "concrete-everyday": (
+        "VOCABULARY RULES — concrete-everyday (this student is young, "
+        "K-5). FOLLOW EXACTLY:\n"
+        "  * NO letter variables. Never use `n`, `x`, `y`, etc. to "
+        "stand for an unknown. Use the concrete numbers from the "
+        "problem.\n"
+        "  * NO algebraic framing. Avoid 'the largest n such that...', "
+        "'let x be the number of...', 'if we call the unknown n...'. "
+        "Speak in plain English about the actual things in the problem.\n"
+        "  * Math jargon (factor, coefficient, equation, expression) "
+        "only when explained in everyday words on first use.\n"
+        "  * Reach for everyday objects: LEGOs, pizza slices, bags of "
+        "candy, friends sharing snacks.\n"
+        "  * Reply length: 3 short sentences MAX (warm acknowledgement "
+        "+ one short setup sentence + one Socratic question). NO "
+        "monologue setup before the question."
+    ),
+}
+
+
 _INLINE_RECIPES: dict[Register, str] = {
     "above_level_exploration": (
         "REGISTER RULES — above_level_exploration (the topic is well\n"
@@ -383,10 +411,17 @@ def format_directives_block(directives: StyleDirectives) -> str:
         "STYLE DIRECTIVES (private — follow exactly, do not recite):",
     ]
     lines.extend(directives.to_prompt_lines())
-    inline = _INLINE_RECIPES.get(directives.register)
-    if inline:
+    # Inline the vocab recipe BEFORE the register recipe so that the
+    # register rules (the more specialized of the two) end up closer
+    # to the user message and win attention ties.
+    vocab_recipe = _VOCAB_RECIPES.get(directives.vocabulary_level)
+    if vocab_recipe:
         lines.append("")
-        lines.append(inline)
+        lines.append(vocab_recipe)
+    register_recipe = _INLINE_RECIPES.get(directives.register)
+    if register_recipe:
+        lines.append("")
+        lines.append(register_recipe)
     return "\n".join(lines)
 
 
