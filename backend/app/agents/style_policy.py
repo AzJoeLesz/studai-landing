@@ -360,9 +360,14 @@ _VOCAB_RECIPES: dict[VocabularyLevel, str] = {
         "only when explained in everyday words on first use.\n"
         "  * Reach for everyday objects: LEGOs, pizza slices, bags of "
         "candy, friends sharing snacks.\n"
-        "  * Reply length: 3 short sentences MAX (warm acknowledgement "
-        "+ one short setup sentence + one Socratic question). NO "
-        "monologue setup before the question."
+        "  * Reply length: 2-3 short sentences MAX. NO monologue setup.\n"
+        "  * If the student has just brought a NEW problem (this is your "
+        "FIRST reply on it), do PHASE 1 — DIAGNOSTIC: warm "
+        "acknowledgement + ONE open question to find out where they are. "
+        "Examples: 'How would you start?', 'What do you already know "
+        "that might help?', 'What do we know about the chocolate bars "
+        "in this problem?'. DO NOT name the operation. DO NOT mention "
+        "specific numbers. DO NOT hint at the method. Just ask and wait."
     ),
 }
 
