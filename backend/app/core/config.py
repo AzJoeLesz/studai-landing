@@ -89,8 +89,22 @@ class Settings(BaseSettings):
         description="How many recent messages to include as LLM context.",
     )
     tutor_max_response_tokens: int = Field(
-        default=1000,
-        description="Upper bound on tokens in a single assistant reply.",
+        default=2000,
+        description=(
+            "Upper bound on tokens in a single assistant reply. For "
+            "reasoning models (gpt-5, o-series) this budget is shared "
+            "with the model's internal reasoning -- 2000 leaves room "
+            "for both. Pure chat models only count visible output."
+        ),
+    )
+    tutor_reasoning_effort: str = Field(
+        default="minimal",
+        description=(
+            "`reasoning_effort` value for gpt-5 / o-series chat. "
+            "`minimal` keeps token budget free for visible output -- "
+            "chat tutoring doesn't need deep internal reasoning. "
+            "Bump to `low`/`medium`/`high` if quality demands it."
+        ),
     )
     tutor_answer_guard_enabled: bool = Field(
         default=True,

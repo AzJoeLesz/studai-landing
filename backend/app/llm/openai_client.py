@@ -16,19 +16,25 @@ from app.llm.base import LLMClient
 # Models that REQUIRE the newer `max_completion_tokens` parameter
 # instead of the legacy `max_tokens`. The OpenAI API rejects
 # `max_tokens` on these with a 400. Match by prefix.
-#
-# Sources for inclusion:
-#   - GPT-5 family announcement: max_completion_tokens required.
-#   - o-series (o1, o3, o4): same.
-#   - GPT-4.1 family: same.
-#
-# Older families (gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.) still
-# accept the legacy `max_tokens` parameter, so we keep using it for
-# backward compatibility -- some have not yet shipped support for
-# `max_completion_tokens` on every endpoint.
 _NEW_TOKEN_PARAM_PREFIXES: tuple[str, ...] = (
     "gpt-5",
     "gpt-4.1",
+    "o1",
+    "o3",
+    "o4",
+)
+
+# Models that internally do reasoning before producing visible output,
+# and bill those reasoning tokens against `max_completion_tokens`. For
+# tutoring chat we want short Socratic replies, NOT deep reasoning,
+# so default to "minimal" effort. Without this, gpt-5-mini sometimes
+# burns the entire token budget on reasoning and emits zero visible
+# tokens -- the chat looks dead from the user's perspective.
+#
+# gpt-4.1 family is on the new max_completion_tokens parameter but
+# does NOT use the reasoning protocol, so excluded here.
+_REASONING_PREFIXES: tuple[str, ...] = (
+    "gpt-5",
     "o1",
     "o3",
     "o4",
@@ -51,6 +57,20 @@ def _token_limit_kwargs(model: str, max_tokens: int | None) -> dict:
     if any(model_lc.startswith(p) for p in _NEW_TOKEN_PARAM_PREFIXES):
         return {"max_completion_tokens": max_tokens}
     return {"max_tokens": max_tokens}
+
+
+def _reasoning_kwargs(model: str) -> dict:
+    """Return reasoning-effort kwargs for models that support them.
+
+    Defaults to `reasoning_effort="minimal"` for GPT-5 / o-series,
+    which keeps tokens available for visible output. Returns an empty
+    dict for models without the parameter.
+    """
+    model_lc = (model or "").lower()
+    if any(model_lc.startswith(p) for p in _REASONING_PREFIXES):
+        settings = get_settings()
+        return {"reasoning_effort": settings.tutor_reasoning_effort}
+    return {}
 
 
 class OpenAIClient(LLMClient):
@@ -80,6 +100,7 @@ class OpenAIClient(LLMClient):
             messages=self._to_openai(messages),  # type: ignore[arg-type]
             stream=True,
             **_token_limit_kwargs(chosen_model, max_tokens),
+            **_reasoning_kwargs(chosen_model),
         )
         async for chunk in stream:
             if not chunk.choices:
@@ -101,5 +122,6 @@ class OpenAIClient(LLMClient):
             messages=self._to_openai(messages),  # type: ignore[arg-type]
             stream=False,
             **_token_limit_kwargs(chosen_model, max_tokens),
+            **_reasoning_kwargs(chosen_model),
         )
         return response.choices[0].message.content or ""

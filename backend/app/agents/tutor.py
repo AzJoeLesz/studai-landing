@@ -382,6 +382,23 @@ async def run_tutor_turn(
                     assistant_reply=full_reply,
                 )
             )
+    else:
+        # No visible output. With gpt-5 / o-series this usually means
+        # the model burned the entire `max_completion_tokens` budget on
+        # internal reasoning before emitting any visible content. Surface
+        # it in the logs -- the chat will appear silent to the user
+        # otherwise, and we want to be able to grep for this on Railway.
+        logger.warning(
+            "tutor: empty assistant reply | session=%s | "
+            "model=%s | max_tokens=%d | reasoning_effort=%s | "
+            "history_len=%d | system_msg_count=%d",
+            session_id,
+            settings.openai_model,
+            settings.tutor_max_response_tokens,
+            settings.tutor_reasoning_effort,
+            len(history),
+            sum(1 for m in context if m.role == "system"),
+        )
 
 
 async def generate_session_title(first_user_message: str) -> str:
