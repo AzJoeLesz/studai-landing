@@ -55,9 +55,45 @@ After running the first-cut onboarding, four real problems showed up. Fixes land
 - `backend/app/core/config.py` — added `placement_judge_model`.
 
 **Deferred to a later pass (still relevant for product polish):**
-- The placement quiz's first-question rotation currently sorts seeded priors by `(evidence_count asc, mastery_score asc)`, so a fresh user always sees their LOWEST-prior topics first. That can be a touch demotivating. Consider switching to median-mastery or shuffling once priors are denser.
 - The judge LLM call adds ~300-700ms latency between the user submitting and the feedback card appearing. Acceptable for a 5-question placement; if it ever feels sluggish, switch to streaming or pre-judge in parallel with the next-question fetch.
 - The corpus `problems.answer` field is sometimes verbose ("8 books, since 24 / 3 = 8"). The judge prompt handles it but the feedback card displays it verbatim, which can be cluttered. A tiny "extract canonical short answer" step at ingestion time would help — defer to a later content cleanup pass.
+
+### Onboarding iteration #2 (placement quality fixes)
+
+After the first iteration shipped, second-round testing surfaced a deeper bug stack: the placement quiz was showing 5 unrelated questions all labeled "linear equations", with synthetic asdiv/svamp template gibberish like "87 oranges in 93 groups". Root causes (and fixes):
+
+| Problem | Root cause | Fix shipped |
+|---------|-----------|-------------|
+| **Topic label and shown problem are unrelated.** Quiz says "linear equations" but shows a geometry problem. | `repo.fetch_problem_for_placement` filtered only by `difficulty` — there was no topic filtering at all. | New `_pick_topic_relevant_problem()` in `api/onboarding.py` reuses the existing problem-bank embedding search (`agents/retrieval.find_relevant_problems`) with `similarity_threshold=0.0` to pull the top 20 candidates by topic name, then `repo.fetch_problem_for_placement_by_ids()` enforces source allowlist + length sanity on top, preserving rank order. Used by both `/placement/start` and `/placement/answer`. |
+| **All 5 questions on linear equations.** | `_topic_for_placement_round` rotated by `progress[i % len(progress)]` after sorting by `(evidence_count asc, mastery_score asc)` — so once the first turn produced the only evidence row, every subsequent turn picked it again. | Now picks from `[p for p in progress if p.evidence_count == 0]` first (sorted by ascending mastery). Only falls back to the full progress list when *all* priors have been touched. With ~11+ seeded topics this means up to 5 distinct topics in a 5-question quiz. |
+| **No grade priors got seeded.** `seedGradePriors()` returned `seeded=0` for many natural inputs (`"4 osztály"`, `"4th grade"`, `"4"`). | `resolve_grade_band` previously only did substring matching against a fixed table of patterns, all of which required a literal period after the digit (`"4."`) or a specific noun phrase (`"grade 4"`). Real users typed many other forms. Now the resolver runs **regex extraction first** (number + noun, in either language, period optional), then the legacy substring table, then a bare-integer fallback. Spelled-out English ordinals work too. Side fix: `grade_priors_seed()` accepts `age=` and falls back to `band_for_age()` when grade resolution fails entirely; `/onboarding/seed-priors` passes `profile.age` so even a typo'd grade still seeds reasonable priors. |
+| **Synthetic asdiv/svamp template gibberish** ("87 oranges organized into 93 groups"). | `fetch_problem_for_placement` pulled from the entire 18k corpus with no source filter. | Constants `_PLACEMENT_SOURCE_ALLOWLIST = ("hendrycks", "gsm8k", "openstax")` and `_PLACEMENT_MIN_LEN/MAX_LEN = 30/600` in `repositories.py`. Both placement fetcher functions enforce them. **Live RAG remains uncapped** — the noisy datasets stay useful as private context for the tutor, just not as problems shown verbatim to the student. |
+| **Answer input dropdown shows previous attempts** (browser autocomplete on the placement input). | Default browser behavior on text inputs. | `<Input>` in `app/[locale]/dashboard/onboarding/page.tsx` got `autoComplete="off"`, `autoCorrect="off"`, `spellCheck={false}`, `data-form-type="other"` (last one neutralizes 1Password / LastPass injection). |
+
+**New helpers:**
+- `agents/grade_priors.py::band_for_age(age)` — public function used by both `style_policy.derive_directives` (already had inline logic) and the seed endpoint.
+- `agents/grade_priors.py::_band_for_grade_number(grade)` — single source of truth for the integer → band mapping.
+- `db/repositories.py::fetch_problem_for_placement_by_ids(...)` — picks the first acceptable problem from a ranked candidate ID list, preserving the semantic-search rank.
+- `api/onboarding.py::_pick_topic_relevant_problem(...)` — orchestrator: embed topic → semantic search → repo filter → fallback chain.
+
+**Smoke-tested resolver behavior** (confirmed in a throwaway script before deletion):
+
+```
+'9. évfolyam'      -> ('hu_nat', '9-10')
+'4 osztály'        -> ('hu_nat', '3-5')   # no period
+'4. evf'           -> ('hu_nat', '3-5')   # short form
+'4th grade'        -> ('us_ccss', '3-5')
+'fourth grade'     -> ('us_ccss', '3-5')
+'Year 11'          -> ('us_ccss', '11-12')
+'12'               -> ('us_ccss', '11-12')   # bare digit
+'9th'              -> ('us_ccss', '9-10')
+'PhD'              -> ('us_ccss', 'university')
+'kindergarten'     -> ('us_ccss', 'K-2')
+'asdf' + age=10    -> 14 priors via age fallback
+None + age=15      -> 34 priors
+```
+
+**No new migrations.** All changes are code-only on top of `006`.
 
 ---
 

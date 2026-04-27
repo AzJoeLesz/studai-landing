@@ -702,6 +702,10 @@ function PlacementQuestionCard({
             disabled={submitting}
             autoFocus
             maxLength={2000}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            data-form-type="other"
           />
           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-3">
             <Button type="submit" disabled={submitting}>

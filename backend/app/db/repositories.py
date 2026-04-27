@@ -673,24 +673,96 @@ def list_placement_attempts(
     return [PlacementAttempt.model_validate(r) for r in (res.data or [])]
 
 
+# Source allowlist for the placement quiz.
+#
+# The corpus is a mix: hendrycks (well-edited Olympiad/contest math),
+# gsm8k (clean grade-school word problems), asdiv + svamp (synthetic
+# template-generated -- frequent nonsense like "87 oranges in 93
+# groups"). For the placement quiz we want the student's first
+# impression of StudAI to be problems that actually make sense, so we
+# limit the pool to the curated sources here.
+#
+# Live tutoring RAG (`agents/retrieval.find_relevant_problems`) keeps
+# pulling from the full corpus -- there the problems are PRIVATE
+# context, not shown verbatim to the student.
+_PLACEMENT_SOURCE_ALLOWLIST = ("hendrycks", "gsm8k", "openstax")
+
+# Length sanity: too-short problems are usually parse errors; too-long
+# problems are usually long proofs that don't fit a 5-question quiz UX.
+_PLACEMENT_MIN_LEN = 30
+_PLACEMENT_MAX_LEN = 600
+
+
 def fetch_problem_for_placement(
     *, exclude_ids: list[UUID], filter_difficulty: str | None
 ) -> Problem | None:
-    """Pick one problem for the placement staircase.
+    """Cheap fallback: pick any allowlisted problem at this difficulty.
 
-    Filters by `difficulty` if provided. We avoid problems the user has
-    already seen in this placement run by excluding their IDs.
+    Used only when the topic-aware search comes back empty. Prefer
+    `fetch_problem_for_placement_by_topic` for actual placement turns.
     """
     sb = get_supabase_client()
     q = sb.table("problems").select(
         "id,source,type,difficulty,problem_en,solution_en,answer,source_id,"
         "created_at"
     )
+    q = q.in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
     if filter_difficulty:
         q = q.eq("difficulty", filter_difficulty)
     if exclude_ids:
         q = q.not_.in_("id", [str(i) for i in exclude_ids])
-    # `limit` 1 is fine; we don't need true randomness for an MVP staircase.
-    res = q.limit(1).execute()
+    # Pull a few candidates so we can length-filter; first survivor wins.
+    res = q.limit(20).execute()
+    for row in res.data or []:
+        body = row.get("problem_en") or ""
+        if _PLACEMENT_MIN_LEN <= len(body) <= _PLACEMENT_MAX_LEN:
+            return Problem.model_validate(row)
+    # Nothing in window -- relax the length filter rather than show
+    # nothing at all.
     rows = res.data or []
+    return Problem.model_validate(rows[0]) if rows else None
+
+
+def fetch_problem_for_placement_by_ids(
+    candidate_ids: list[UUID],
+    *,
+    exclude_ids: list[UUID],
+    filter_difficulty: str | None,
+) -> Problem | None:
+    """Pick the first acceptable problem from a candidate ID list.
+
+    The candidate IDs come from semantic topic search
+    (`agents/retrieval.find_relevant_problems` against the topic name).
+    We then enforce the source allowlist + length sanity + the
+    excluded-IDs set on top.
+    """
+    if not candidate_ids:
+        return None
+    exclude_str = {str(i) for i in exclude_ids}
+    keep = [str(i) for i in candidate_ids if str(i) not in exclude_str]
+    if not keep:
+        return None
+    sb = get_supabase_client()
+    q = (
+        sb.table("problems")
+        .select(
+            "id,source,type,difficulty,problem_en,solution_en,answer,"
+            "source_id,created_at"
+        )
+        .in_("id", keep)
+        .in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
+    )
+    if filter_difficulty:
+        q = q.eq("difficulty", filter_difficulty)
+    rows = q.execute().data or []
+    # Preserve the semantic-search ranking order: build a position map
+    # from the input list and sort the survivors by that.
+    rank = {pid: i for i, pid in enumerate(keep)}
+    rows.sort(key=lambda r: rank.get(str(r["id"]), 1_000_000))
+    for row in rows:
+        body = row.get("problem_en") or ""
+        if _PLACEMENT_MIN_LEN <= len(body) <= _PLACEMENT_MAX_LEN:
+            return Problem.model_validate(row)
+    # Nothing in length window -- accept any allowlisted ranked match
+    # rather than send the user to the difficulty-only fallback.
     return Problem.model_validate(rows[0]) if rows else None

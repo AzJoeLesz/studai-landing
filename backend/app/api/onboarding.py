@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from app.agents import answer_judge
 from app.agents import grade_priors as priors_mod
 from app.agents import mastery as mastery_mod
+from app.agents.retrieval import find_relevant_problems
 from app.api.deps import CurrentUser
 from app.db import repositories as repo
 from app.db.schemas import PlacementAttempt, Problem, StudentProgress
@@ -52,29 +53,33 @@ class SeedPriorsResponse(BaseModel):
 async def seed_priors(user: CurrentUser) -> SeedPriorsResponse:
     """Idempotent seed of grade-derived priors into `student_progress`.
 
-    Reads the current profile.grade_level, resolves to (curriculum, band),
-    looks up the per-band priors, and writes rows for any topic the user
-    doesn't already have. Topics with existing rows are NOT overwritten
-    (those have real evidence behind them now).
+    Resolution chain (so this endpoint is robust to whatever the user typed):
+      1. Try `profile.grade_level` -> (curriculum, band) via the resolver.
+      2. If that fails, fall back to `profile.age` -> band (us_ccss curriculum).
+      3. If both are missing, return seeded=0 (no error -- tutor still works).
+
+    Existing `student_progress` rows are never overwritten -- those rows
+    have real evidence (placement / extractor / step_check / rating)
+    behind them by the time anyone re-runs seed.
     """
     profile = await asyncio.to_thread(repo.get_profile, user.user_id)
-    if profile is None or not profile.grade_level:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Set grade_level on your profile before seeding priors.",
+    if profile is None:
+        return SeedPriorsResponse(
+            seeded=0, curriculum=None, band=None, skipped_existing=False
         )
 
     resolved = priors_mod.resolve_grade_band(profile.grade_level)
-    if resolved is None:
-        return SeedPriorsResponse(
-            seeded=0,
-            curriculum=None,
-            band=None,
-            skipped_existing=False,
-        )
-    curriculum, band = resolved
+    curriculum: str | None
+    band: str | None
+    if resolved:
+        curriculum, band = resolved
+    else:
+        band = priors_mod.band_for_age(profile.age)
+        curriculum = "us_ccss" if band else None
 
-    pairs = priors_mod.grade_priors_seed(profile.grade_level)
+    pairs = priors_mod.grade_priors_seed(
+        profile.grade_level, age=profile.age
+    )
     if not pairs:
         return SeedPriorsResponse(
             seeded=0,
@@ -178,17 +183,84 @@ def _topic_for_placement_round(
 ) -> str:
     """Pick which topic to probe next.
 
-    Strategy: rotate through the user's seeded priors, preferring topics
-    with fewer evidence rows. This keeps the 5 questions diverse rather
-    than 5 in the same area.
+    Strategy: rotate through the user's seeded priors, with one twist:
+    drop topics that already have evidence from this placement run, so
+    the 5 questions cover up to 5 different topics instead of cycling
+    back to the lowest-mastery row once it gains evidence.
     """
-    progress = repo.get_top_progress(user_id, limit=20)
+    progress = repo.get_top_progress(user_id, limit=30)
     if progress:
-        # Sort by (evidence_count asc, mastery_score asc) -- least-known first.
-        progress.sort(key=lambda p: (p.evidence_count, p.mastery_score))
+        # Topics with no evidence yet, sorted ascending by mastery so we
+        # probe the shakier areas first.
+        unseen = [p for p in progress if p.evidence_count == 0]
+        unseen.sort(key=lambda p: p.mastery_score)
+        if unseen:
+            return unseen[attempts_so_far % len(unseen)].topic
+        # All priors have been touched (rare on a 5-question quiz with
+        # 11+ priors): rotate by lowest mastery overall.
+        progress.sort(key=lambda p: p.mastery_score)
         return progress[attempts_so_far % len(progress)].topic
-    # No priors seeded yet -- fall back to a sensible default.
+    # No priors seeded yet -- last-resort default.
     return "linear equations"
+
+
+async def _pick_topic_relevant_problem(
+    *,
+    topic: str,
+    difficulty: str | None,
+    exclude_ids: list[UUID],
+) -> Problem | None:
+    """Use the same problem-bank embedding search the live tutor uses to
+    fetch a placement problem that actually matches the requested topic.
+
+    Why this exists: `repo.fetch_problem_for_placement` only filters by
+    `difficulty` -- it has no concept of topic. So a slot labeled
+    "linear equations" could surface a question about geometry, and a
+    4th-grade slot could pull a Hendrycks Olympiad problem. The fix is
+    to embed the topic name, do an ANN search against
+    `problem_embeddings`, and let the source-allowlist + length filters
+    in the repo pick the first acceptable hit.
+
+    Falls through to the difficulty-only fetcher if the search returns
+    nothing the allowlist accepts.
+    """
+    # `find_relevant_problems` already wraps the embed-then-RPC dance.
+    # We ignore its similarity_threshold here -- the threshold matters
+    # for live-RAG noise control, but for placement we're happy to take
+    # the best available match even if it's a bit loose.
+    hits = await find_relevant_problems(
+        topic,
+        "en",
+        top_k=20,
+        similarity_threshold=0.0,
+    )
+    candidate_ids = [h.id for h in hits]
+    if candidate_ids:
+        chosen = await asyncio.to_thread(
+            repo.fetch_problem_for_placement_by_ids,
+            candidate_ids,
+            exclude_ids=exclude_ids,
+            filter_difficulty=difficulty,
+        )
+        if chosen is not None:
+            return chosen
+        # Try once more without the difficulty filter, since RAG already
+        # found topic-matching problems -- mismatched difficulty beats
+        # an off-topic problem.
+        chosen = await asyncio.to_thread(
+            repo.fetch_problem_for_placement_by_ids,
+            candidate_ids,
+            exclude_ids=exclude_ids,
+            filter_difficulty=None,
+        )
+        if chosen is not None:
+            return chosen
+    # Last resort: ignore topic, just match difficulty + source allowlist.
+    return await asyncio.to_thread(
+        repo.fetch_problem_for_placement,
+        exclude_ids=exclude_ids,
+        filter_difficulty=difficulty,
+    )
 
 
 @router.post("/placement/start", response_model=PlacementStartResponse)
@@ -216,18 +288,11 @@ async def placement_start(user: CurrentUser) -> PlacementStartResponse:
         None,
         None,
     )
-    problem = await asyncio.to_thread(
-        repo.fetch_problem_for_placement,
+    problem = await _pick_topic_relevant_problem(
+        topic=topic,
+        difficulty=difficulty,
         exclude_ids=[a.problem_id for a in attempts],
-        filter_difficulty=difficulty,
     )
-    if problem is None:
-        # Rare: empty or filtered-out corpus. Drop the difficulty filter.
-        problem = await asyncio.to_thread(
-            repo.fetch_problem_for_placement,
-            exclude_ids=[a.problem_id for a in attempts],
-            filter_difficulty=None,
-        )
     if problem is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -305,17 +370,11 @@ async def placement_answer(
         payload.difficulty,
         was_correct,
     )
-    next_problem = await asyncio.to_thread(
-        repo.fetch_problem_for_placement,
+    next_problem = await _pick_topic_relevant_problem(
+        topic=next_topic,
+        difficulty=next_difficulty,
         exclude_ids=[a.problem_id for a in attempts],
-        filter_difficulty=next_difficulty,
     )
-    if next_problem is None:
-        next_problem = await asyncio.to_thread(
-            repo.fetch_problem_for_placement,
-            exclude_ids=[a.problem_id for a in attempts],
-            filter_difficulty=None,
-        )
     if next_problem is None:
         # Corpus exhausted -- treat as completed early.
         summary = await asyncio.to_thread(
