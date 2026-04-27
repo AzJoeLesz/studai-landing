@@ -171,7 +171,10 @@
       "viewResults": "See results",
       "completedTitle": "All done!",
       "completedBody": "Thanks — the tutor is now calibrated to you. You can revisit the quick check from Settings any time.",
-      "topicsHeading": "Where you are now",
+      "topicsHeading": "Where you're starting",
+      "topicsFromQuizHeading": "From your answers",
+      "topicsFromGradeHeading": "From your grade level (estimates)",
+      "topicsFromGradeNote": "These are starting estimates from typical grade-level expectations — the tutor will refine them as you work together.",
       "goToTutor": "Open the tutor",
       "alreadyCompleted": "You've already done the quick check. You can re-take it later if you want."
     },

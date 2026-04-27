@@ -788,37 +788,78 @@ interface CompletedCardProps {
 
 function CompletedCard({ summary, onContinue }: CompletedCardProps) {
   const tP = useTranslations("onboarding.placement");
+
+  // Split rows by source so the user can tell what came from THEIR
+  // answers vs from the grade-priors lookup table. Both are real
+  // numbers in `student_progress`, but they have very different
+  // confidence -- showing them mixed together led demo testers to
+  // assume "decimals 80%" came from the quiz when it didn't.
+  const { fromQuiz, fromGrade } = useMemo(() => {
+    const rows = summary ?? [];
+    return {
+      fromQuiz: rows.filter(
+        (r) => r.evidence_source !== "prior",
+      ),
+      fromGrade: rows.filter((r) => r.evidence_source === "prior"),
+    };
+  }, [summary]);
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>{tP("completedTitle")}</CardTitle>
         <CardDescription>{tP("completedBody")}</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {summary && summary.length > 0 && (
-          <div className="rounded-md border border-border bg-muted/30 p-4 text-sm">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {tP("topicsHeading")}
-            </p>
-            <ul className="flex flex-col gap-1">
-              {summary.slice(0, 8).map((row) => (
-                <li
-                  key={`${row.user_id}-${row.topic}`}
-                  className="flex items-baseline justify-between gap-3"
-                >
-                  <span className="text-foreground">{row.topic}</span>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {(row.mastery_score * 100).toFixed(0)}%
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+      <CardContent className="flex flex-col gap-5">
+        {fromQuiz.length > 0 && (
+          <ProgressList
+            heading={tP("topicsFromQuizHeading")}
+            rows={fromQuiz}
+          />
+        )}
+        {fromGrade.length > 0 && (
+          <ProgressList
+            heading={tP("topicsFromGradeHeading")}
+            rows={fromGrade.slice(0, 8)}
+            note={tP("topicsFromGradeNote")}
+          />
         )}
         <Button type="button" onClick={onContinue}>
           {tP("goToTutor")}
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+interface ProgressListProps {
+  heading: string;
+  rows: StudentProgress[];
+  note?: string;
+}
+
+function ProgressList({ heading, rows, note }: ProgressListProps) {
+  return (
+    <div className="rounded-md border border-border bg-muted/30 p-4 text-sm">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {heading}
+      </p>
+      <ul className="flex flex-col gap-1">
+        {rows.map((row) => (
+          <li
+            key={`${row.user_id}-${row.topic}`}
+            className="flex items-baseline justify-between gap-3"
+          >
+            <span className="text-foreground">{row.topic}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {(row.mastery_score * 100).toFixed(0)}%
+            </span>
+          </li>
+        ))}
+      </ul>
+      {note && (
+        <p className="mt-3 text-xs text-muted-foreground">{note}</p>
+      )}
+    </div>
   );
 }

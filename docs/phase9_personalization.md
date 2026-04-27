@@ -76,7 +76,34 @@ After the first iteration shipped, second-round testing surfaced a deeper bug st
 - `db/repositories.py::fetch_problem_for_placement_by_ids(...)` — picks the first acceptable problem from a ranked candidate ID list, preserving the semantic-search rank.
 - `api/onboarding.py::_pick_topic_relevant_problem(...)` — orchestrator: embed topic → semantic search → repo filter → fallback chain.
 
-**Smoke-tested resolver behavior** (confirmed in a throwaway script before deletion):
+### Onboarding iteration #3 (placement durability + summary clarity)
+
+After iteration #2, third-round testing surfaced two more issues:
+
+1. **The quiz terminated after a single question.** Symptoms: user submitted answer 1, was taken straight to the completion screen. Root cause: `mastery.pick_difficulty_for()` returns logical buckets (`"easy"`, `"medium"`, `"hard"`), but the corpus stores difficulty as `"Level 1"` through `"Level 5"` (Hendrycks) or `null`/`"easy_medium"` (others). `repo.fetch_problem_for_placement(filter_difficulty="easy")` matched **zero rows**, every fallback in `_pick_topic_relevant_problem` returned `None`, and the `placement/answer` endpoint sent `next=None, completed=True`.
+
+2. **Completion screen showed mastery rows that looked like quiz outcomes but were actually grade priors.** A user who answered one question with "I don't know" saw eight topics with percentages (decimals 80%, division 90%, etc.) and read it as "based on the quiz". They came from `seedGradePriors` and were *correct* numbers — just labeled wrong.
+
+**Fixes (this iteration):**
+
+| Area | Change |
+|------|--------|
+| **`agents/mastery.py`** | New `_LOGICAL_TO_CORPUS_DIFFICULTIES` table + public `corpus_difficulties_for(logical) -> list[str]`. Maps `"easy"` → `["easy", "Level 1", "Level 2", "easy_medium"]`, etc. Single source of truth used by both placement fetchers. |
+| **`db/repositories.py`** | Both `fetch_problem_for_placement` and `fetch_problem_for_placement_by_ids` now take `filter_difficulties: list[str] \| None` and use a Postgrest `IN` filter. Empty list / None means "no difficulty filter". Length window relaxed to 40 candidates pre-filter so length sanity has more to choose from. |
+| **`api/onboarding.py::_pick_topic_relevant_problem`** | Now translates the logical difficulty via `corpus_difficulties_for` before any DB call. Five-step fallback chain (each step strictly looser than the previous): semantic + difficulty bucket → semantic only → difficulty bucket only (allowlist) → no filters except allowlist → `None`. Quiz survives sparse / unembedded corpora. |
+| **Frontend completion card** | New `ProgressList` subcomponent. Splits `summary` rows by `evidence_source`: rows with `'placement'` (or `'extractor'`/`'rating'`/`'step_check'`) go under **"From your answers"**; rows with `'prior'` go under **"From your grade level (estimates)"** with a small explanatory caption. The "From your grade" section is capped at 8 rows so it doesn't dominate the page. New i18n keys: `topicsFromQuizHeading`, `topicsFromGradeHeading`, `topicsFromGradeNote`. The previous one-bucket "Where you are now" heading is replaced with "Where you're starting" / "Innen indulunk" — a more honest framing. |
+
+**Smoke-tested mappings:**
+
+```
+corpus_difficulties_for('easy')    -> ['easy', 'Level 1', 'Level 2', 'easy_medium']
+corpus_difficulties_for('medium')  -> ['medium', 'Level 2', 'Level 3', 'Level 4', 'easy_medium']
+corpus_difficulties_for('hard')    -> ['hard', 'Level 4', 'Level 5']
+corpus_difficulties_for(None)      -> []
+corpus_difficulties_for('garbage') -> []
+```
+
+**Resolver behavior** (confirmed in a throwaway script before deletion):
 
 ```
 '9. évfolyam'      -> ('hu_nat', '9-10')

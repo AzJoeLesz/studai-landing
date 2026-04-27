@@ -171,7 +171,10 @@
       "viewResults": "Eredmény megnézése",
       "completedTitle": "Készen vagy!",
       "completedBody": "Köszi — a korrepetitor most már hozzád van igazítva. A Beállításokban bármikor újra megcsinálhatod a gyors ellenőrzést.",
-      "topicsHeading": "Itt tartasz most",
+      "topicsHeading": "Innen indulunk",
+      "topicsFromQuizHeading": "A válaszaid alapján",
+      "topicsFromGradeHeading": "Az évfolyamod alapján (becslés)",
+      "topicsFromGradeNote": "Ezek kiinduló becslések a tipikus évfolyam-elvárások alapján — a korrepetitor a közös munka során finomítja őket.",
       "goToTutor": "Tovább a korrepetitorhoz",
       "alreadyCompleted": "Már megcsináltad a gyors ellenőrzést. Később újra megcsinálhatod, ha szeretnéd."
     },

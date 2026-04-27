@@ -694,12 +694,19 @@ _PLACEMENT_MAX_LEN = 600
 
 
 def fetch_problem_for_placement(
-    *, exclude_ids: list[UUID], filter_difficulty: str | None
+    *,
+    exclude_ids: list[UUID],
+    filter_difficulties: list[str] | None = None,
 ) -> Problem | None:
-    """Cheap fallback: pick any allowlisted problem at this difficulty.
+    """Pick any allowlisted problem matching one of `filter_difficulties`.
 
-    Used only when the topic-aware search comes back empty. Prefer
-    `fetch_problem_for_placement_by_topic` for actual placement turns.
+    Used as the last-resort fallback when topic-aware semantic search
+    returns nothing. Pass `filter_difficulties=None` (or `[]`) to skip
+    the difficulty filter entirely. Pass a list -- e.g.
+    ``["Level 1", "Level 2", "easy"]`` -- to allow any of them, since
+    different datasets in the corpus use different difficulty
+    vocabularies (Hendrycks: "Level 1"-"Level 5", GSM8K: often null,
+    ASDiv: words). See `agents.mastery.corpus_difficulties_for`.
     """
     sb = get_supabase_client()
     q = sb.table("problems").select(
@@ -707,18 +714,18 @@ def fetch_problem_for_placement(
         "created_at"
     )
     q = q.in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
-    if filter_difficulty:
-        q = q.eq("difficulty", filter_difficulty)
+    if filter_difficulties:
+        q = q.in_("difficulty", filter_difficulties)
     if exclude_ids:
         q = q.not_.in_("id", [str(i) for i in exclude_ids])
     # Pull a few candidates so we can length-filter; first survivor wins.
-    res = q.limit(20).execute()
+    res = q.limit(40).execute()
     for row in res.data or []:
         body = row.get("problem_en") or ""
         if _PLACEMENT_MIN_LEN <= len(body) <= _PLACEMENT_MAX_LEN:
             return Problem.model_validate(row)
-    # Nothing in window -- relax the length filter rather than show
-    # nothing at all.
+    # Nothing in length window -- relax the length filter rather than
+    # show nothing at all.
     rows = res.data or []
     return Problem.model_validate(rows[0]) if rows else None
 
@@ -727,14 +734,15 @@ def fetch_problem_for_placement_by_ids(
     candidate_ids: list[UUID],
     *,
     exclude_ids: list[UUID],
-    filter_difficulty: str | None,
+    filter_difficulties: list[str] | None = None,
 ) -> Problem | None:
-    """Pick the first acceptable problem from a candidate ID list.
+    """Pick the first acceptable problem from a ranked candidate ID list.
 
-    The candidate IDs come from semantic topic search
-    (`agents/retrieval.find_relevant_problems` against the topic name).
-    We then enforce the source allowlist + length sanity + the
-    excluded-IDs set on top.
+    The IDs come from semantic topic search
+    (``agents/retrieval.find_relevant_problems`` against the topic name).
+    We then enforce the source allowlist + difficulty list + length
+    sanity + the excluded-IDs set on top, *while preserving the
+    semantic-search rank order*.
     """
     if not candidate_ids:
         return None
@@ -752,8 +760,8 @@ def fetch_problem_for_placement_by_ids(
         .in_("id", keep)
         .in_("source", list(_PLACEMENT_SOURCE_ALLOWLIST))
     )
-    if filter_difficulty:
-        q = q.eq("difficulty", filter_difficulty)
+    if filter_difficulties:
+        q = q.in_("difficulty", filter_difficulties)
     rows = q.execute().data or []
     # Preserve the semantic-search ranking order: build a position map
     # from the input list and sort the survivors by that.

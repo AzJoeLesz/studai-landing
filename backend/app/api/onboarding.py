@@ -210,20 +210,33 @@ async def _pick_topic_relevant_problem(
     difficulty: str | None,
     exclude_ids: list[UUID],
 ) -> Problem | None:
-    """Use the same problem-bank embedding search the live tutor uses to
-    fetch a placement problem that actually matches the requested topic.
+    """Pick a placement problem that matches the requested topic.
 
-    Why this exists: `repo.fetch_problem_for_placement` only filters by
-    `difficulty` -- it has no concept of topic. So a slot labeled
-    "linear equations" could surface a question about geometry, and a
-    4th-grade slot could pull a Hendrycks Olympiad problem. The fix is
-    to embed the topic name, do an ANN search against
-    `problem_embeddings`, and let the source-allowlist + length filters
-    in the repo pick the first acceptable hit.
+    Why this exists: `repo.fetch_problem_for_placement` only knows
+    about source/difficulty -- it has no concept of topic. So a slot
+    labeled "linear equations" could surface a geometry question, and
+    a 4th-grade slot could pull a Hendrycks Olympiad problem. The fix
+    is to embed the topic name, do an ANN search against
+    `problem_embeddings`, and let the source-allowlist + length
+    filters in the repo pick the first acceptable hit.
 
-    Falls through to the difficulty-only fetcher if the search returns
-    nothing the allowlist accepts.
+    Difficulty handling is bucket-based: `difficulty` is a logical
+    bucket ("easy"/"medium"/"hard") that gets translated into the
+    actual corpus difficulty strings (e.g. "Level 1", "Level 2",
+    "easy_medium") via `mastery.corpus_difficulties_for`. Without
+    this translation, exact-match filtering returns zero rows because
+    Hendrycks uses "Level N" while ASDiv uses "easy"/"medium" -- and
+    the placement quiz would terminate after one question.
+
+    Five-step fallback chain (each step is wider than the last):
+      1. Semantic hits + difficulty bucket
+      2. Semantic hits, no difficulty
+      3. Difficulty bucket, no semantic (allowlist only)
+      4. No filters, allowlist only
+      5. None -- caller treats as "corpus exhausted, finish quiz"
     """
+    diffs = mastery_mod.corpus_difficulties_for(difficulty)
+
     # `find_relevant_problems` already wraps the embed-then-RPC dance.
     # We ignore its similarity_threshold here -- the threshold matters
     # for live-RAG noise control, but for placement we're happy to take
@@ -231,35 +244,48 @@ async def _pick_topic_relevant_problem(
     hits = await find_relevant_problems(
         topic,
         "en",
-        top_k=20,
+        top_k=30,
         similarity_threshold=0.0,
     )
     candidate_ids = [h.id for h in hits]
+
     if candidate_ids:
         chosen = await asyncio.to_thread(
             repo.fetch_problem_for_placement_by_ids,
             candidate_ids,
             exclude_ids=exclude_ids,
-            filter_difficulty=difficulty,
+            filter_difficulties=diffs,
         )
         if chosen is not None:
             return chosen
-        # Try once more without the difficulty filter, since RAG already
-        # found topic-matching problems -- mismatched difficulty beats
-        # an off-topic problem.
+        # Mismatched difficulty beats an off-topic problem.
         chosen = await asyncio.to_thread(
             repo.fetch_problem_for_placement_by_ids,
             candidate_ids,
             exclude_ids=exclude_ids,
-            filter_difficulty=None,
+            filter_difficulties=None,
         )
         if chosen is not None:
             return chosen
-    # Last resort: ignore topic, just match difficulty + source allowlist.
+
+    # Semantic search came back empty (corpus may not be embedded yet, or
+    # the topic name doesn't ANN-match anything). Fall back to source
+    # allowlist + difficulty bucket.
+    chosen = await asyncio.to_thread(
+        repo.fetch_problem_for_placement,
+        exclude_ids=exclude_ids,
+        filter_difficulties=diffs,
+    )
+    if chosen is not None:
+        return chosen
+
+    # Final safety net: any allowlisted problem at all. Better an
+    # off-topic, off-difficulty placement question than the quiz dying
+    # on its second turn.
     return await asyncio.to_thread(
         repo.fetch_problem_for_placement,
         exclude_ids=exclude_ids,
-        filter_difficulty=difficulty,
+        filter_difficulties=None,
     )
 
 

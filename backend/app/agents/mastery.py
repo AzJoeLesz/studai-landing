@@ -50,6 +50,29 @@ _DIFFICULTY_NUMERIC = {
     "easy_medium": -0.5,
 }
 
+# Inverse mapping: which corpus difficulty STRINGS belong to a logical
+# bucket. Used by the placement quiz when filtering the problems table.
+# A logical bucket can match multiple corpus values because different
+# datasets use different vocabulary (Hendrycks: "Level N",
+# ASDiv/SVAMP: "easy"/"medium"/"hard", GSM8K: often null).
+_LOGICAL_TO_CORPUS_DIFFICULTIES: dict[str, list[str]] = {
+    "easy":   ["easy", "Level 1", "Level 2", "easy_medium"],
+    "medium": ["medium", "Level 2", "Level 3", "Level 4", "easy_medium"],
+    "hard":   ["hard", "Level 4", "Level 5"],
+}
+
+
+def corpus_difficulties_for(logical: str | None) -> list[str]:
+    """Translate a logical difficulty bucket into the actual difficulty
+    strings present in the `problems.difficulty` column.
+
+    Returns an empty list when the input is None or doesn't match a
+    known bucket -- callers should treat that as "no difficulty filter".
+    """
+    if not logical:
+        return []
+    return list(_LOGICAL_TO_CORPUS_DIFFICULTIES.get(logical.strip().lower(), []))
+
 # Source weight: how strongly this evidence type moves mastery. The
 # extractor is noisy LLM-derived signal; placement and step-checks are
 # clean and get full weight; ratings are intermediate.
@@ -271,5 +294,6 @@ __all__ = [
     "mastery_to_theta",
     "pick_difficulty_for",
     "next_difficulty_after_outcome",
+    "corpus_difficulties_for",
     "UpdateOutcome",
 ]
