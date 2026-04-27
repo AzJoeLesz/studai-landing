@@ -25,6 +25,7 @@ import math
 from dataclasses import dataclass
 
 from app.agents.grade_priors import topic_universe
+from app.core.config import get_settings
 from app.embeddings import get_embeddings_client
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,29 @@ class TopicClassification:
     similarity: float
 
 
-_DEFAULT_CONFIDENCE_FLOOR = 0.30  # below this, return None instead of guessing
+# Below this similarity, we treat the classification as noise and return
+# `None` (caller falls back to `at_level` register). Empirical tuning:
+#  * 0.20-0.40 = weakly related on `text-embedding-3-small`
+#  * 0.40-0.60 = related
+#  * 0.60+     = closely related
+# A long story-heavy word problem can score ~0.3 against ANY topic
+# centroid (the story words drown the math signal). 0.30 was letting
+# clear noise through -- e.g. a chocolate-bar division word problem
+# was being matched to "probability basics" at 0.33 and routed to
+# `above_level_exploration` for a 4th grader. Bump to 0.40: still
+# catches genuine on-topic queries ("what is a derivative?",
+# "tell me about parabolas") which score 0.45+, while filtering out
+# the weak guesses that cause register false positives.
+#
+# Override via `TOPIC_CLASSIFIER_CONFIDENCE_FLOOR` env var.
+_FALLBACK_CONFIDENCE_FLOOR = 0.40
+
+
+def _confidence_floor() -> float:
+    try:
+        return float(get_settings().topic_classifier_confidence_floor)
+    except Exception:
+        return _FALLBACK_CONFIDENCE_FLOOR
 
 
 # In-memory centroid cache.
@@ -94,14 +117,19 @@ async def classify_topic(
     message: str,
     *,
     query_embedding: list[float] | None = None,
-    confidence_floor: float = _DEFAULT_CONFIDENCE_FLOOR,
+    confidence_floor: float | None = None,
 ) -> TopicClassification:
     """Return the nearest canonical topic for `message`, or None if low-confidence.
 
     `query_embedding` lets the caller reuse the embedding it already
     computed for RAG (see `agents/retrieval.build_grounding_context`).
     Saves one OpenAI call per turn.
+
+    `confidence_floor=None` reads the configured floor at call time
+    (see `Settings.topic_classifier_confidence_floor`).
     """
+    if confidence_floor is None:
+        confidence_floor = _confidence_floor()
     if not message.strip():
         return TopicClassification(None, 0.0)
 

@@ -146,6 +146,19 @@ class Settings(BaseSettings):
             "Upper bound on the JSON output of the post-turn extractor."
         ),
     )
+    topic_classifier_confidence_floor: float = Field(
+        default=0.40,
+        description=(
+            "Cosine-similarity floor for the live topic classifier "
+            "(`agents/topic_classifier`). Below this, the classifier "
+            "returns None and the register defaults to `at_level`. "
+            "Lower values (~0.30) admit weak guesses and produce "
+            "register false positives -- a chocolate-bar division "
+            "word problem getting matched to `probability basics` at "
+            "0.33 and routed to `above_level_exploration`. Higher "
+            "values (~0.50) miss some genuine on-topic queries."
+        ),
+    )
 
     # --- Retrieval-augmented tutoring (Phase 10 v1) -------------------------
     # On every chat turn, search the problem bank with the student's latest
