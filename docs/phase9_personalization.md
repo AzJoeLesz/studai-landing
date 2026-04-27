@@ -140,6 +140,31 @@ grade=None                                + age=None -> ('hendrycks', 'gsm8k') [
 
 **Live tutor RAG is unchanged** — it still pulls from the full corpus (asdiv/svamp included) because those problems are private grounding context, not shown verbatim. The band-source filter applies *only* to the placement quiz.
 
+### Onboarding iteration #5 (live-topic register + tutor v3 anti-leak)
+
+A 4th grader (Juli) opened a fresh chat with "I'd like to talk about parabolas". Turn 1 worked OK by luck — the model went into intuitive-explanation mode because the message read like a curiosity request. Turn 2 ("Can we solve some problem including parabolas?") got served a full quadratic with formal notation `$y = ax^2 + bx + c$`, function notation `$h(t) = -4t^2 + 16t + 2$`, and "What would you like to find out about this parabola?" — a clear violation of the `above_level_exploration` register.
+
+Two root causes, both fixed:
+
+| Problem | Fix |
+|---------|-----|
+| **Register only fires on turn 2+.** `register` was derived from `session_state.current_topic`, which is set by the post-turn extractor *after* a turn ends. Turn 1 always had `current_topic = None`, so the register defaulted to `at_level`. | New `live_topic` parameter on `style_policy.derive_directives`. `agents/tutor.py::run_tutor_turn` calls `topic_classifier.classify_topic(user_message)` in the same `asyncio.gather` as profile/state/progress/grounding, then passes the result through `_build_context` to `derive_directives`. `derive_directives` now uses `live_topic or session_state.current_topic` for the register check — so Juli's "parabolas" gets classified to `quadratic functions` (centroid match) on turn 1, and the register fires immediately. The post-turn extractor still runs and refines `current_topic` for downstream turns. |
+| **Even when register fires, the LLM complies with explicit problem requests.** v3's `above_level_exploration` recipe said "do NOT pose practice problems" but didn't tell the model what to do when the student *asks* for one. So when Juli wrote "Can we solve some problem including parabolas?", the LLM happily set up `$h(t) = -4t^2 + 16t + 2$`. | `prompts/tutor_v3.txt` strengthened: explicit refusal script ("That kind of problem is something we usually start in [grade band]…"), explicit ban on equations-with-variables / function notation / generic constants, 3-5 sentence cap. Mirrored in the global "WHAT YOU MUST NEVER DO" section so the rule appears twice in the prompt. |
+
+**Smoke-tested register decisions** (script deleted afterward):
+
+```
+4th grader + no session_state + no live_topic                -> at_level (the bug)
+4th grader + no session_state + live_topic='quadratic functions' -> above_level_exploration ✓
+4th grader + no session_state + live_topic='parabolas'        -> above_level_exploration ✓ (not in priors but band has no entry → 0.0 → above_level)
+10th grader + live_topic='quadratic functions'                 -> at_level (sanity ✓)
+4th grader + stale state='addition' + live_topic='quadratic functions' -> live wins, above_level_exploration ✓
+```
+
+**Topic classifier note:** the classifier's centroid cache is process-local (lazy-loaded on first call, ~5s startup penalty for ~50 topic embeddings). Subsequent classifications are ~30ms. Cost is one extra `text-embedding-3-small` call per chat turn — negligible at gpt-4o-mini's per-turn cost.
+
+**Pending follow-up:** "parabolas" itself isn't in `grade_priors.json` because it's an alias / informal name for "quadratic functions". The classifier handles this via centroid similarity, but explicitly adding aliases like `"parabolas" → "quadratic functions"` to `topic_aliases` would tighten the match and reduce reliance on embedding similarity. Defer until we have more telemetry on what live messages actually look like.
+
 **Resolver behavior** (confirmed in a throwaway script before deletion):
 
 ```

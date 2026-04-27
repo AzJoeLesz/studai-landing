@@ -190,12 +190,21 @@ def derive_directives(
     profile: Profile | None,
     session_state: SessionState | None,
     top_progress: list[StudentProgress] | None = None,
+    live_topic: str | None = None,
 ) -> StyleDirectives:
     """Pure function: profile + state + progress -> StyleDirectives.
 
     `top_progress` should be the student's most recently-touched topics.
-    The function looks up the row for `session_state.current_topic`
-    among them when deciding `register`.
+    The function looks up the row for the current topic among them when
+    deciding `register`.
+
+    `live_topic` is the topic classifier's call on the current user
+    message. When provided it OVERRIDES `session_state.current_topic`
+    for the register check -- the post-turn extractor only writes
+    session_state *after* the previous turn, so on turn 1 of a fresh
+    session `current_topic` is still None and the register would
+    incorrectly default to `at_level`. The live classification fixes
+    that.
     """
     grade_level = profile.grade_level if profile else None
     age = profile.age if profile else None
@@ -270,9 +279,16 @@ def derive_directives(
                 hint_timing = "early"
 
     # ---- register (topic-grade alignment) --------------------------------
-    current_topic = (
+    # Prefer the live classification: the post-turn extractor writes
+    # session_state.current_topic AFTER the turn, so on turn 1 it's None.
+    # Without `live_topic`, the register would default to at_level on
+    # the first message of any new session -- exactly the moment a 4th
+    # grader is most likely to ask "what are parabolas?" and most needs
+    # the above_level_exploration register.
+    state_topic = (
         session_state.current_topic if session_state is not None else None
     )
+    current_topic = live_topic or state_topic
     progress_for_topic: StudentProgress | None = None
     if current_topic and top_progress:
         canon = canonicalize_topic(current_topic)

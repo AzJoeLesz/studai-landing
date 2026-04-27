@@ -22,6 +22,7 @@ from uuid import UUID
 
 from app.agents import state_updater, style_policy
 from app.agents.retrieval import GroundingContext, build_grounding_context
+from app.agents.topic_classifier import classify_topic
 from app.core.config import get_settings
 from app.db import repositories as repo
 from app.db.schemas import (
@@ -150,6 +151,7 @@ def _build_context(
     session_state: SessionState | None,
     progress: list[StudentProgress] | None,
     grounding: GroundingContext | None = None,
+    live_topic: str | None = None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
@@ -157,7 +159,9 @@ def _build_context(
     in tutor_v3.txt):
       1. Persona (CURRENT_TUTOR_PROMPT)
       2. Profile snippet
-      3. Style directives (Phase 9B)
+      3. Style directives (Phase 9B) -- includes the `register` decision
+         which is computed from the topic of THIS message (live_topic),
+         not just from the previous turn's session_state.
       4. Student progress (Phase 9A/9D)
       5. Session state (Phase 9A)
       6. Grounding L1 (problem RAG)
@@ -166,10 +170,11 @@ def _build_context(
       9. Recent history (truncated; running summary covers older turns)
      10. New user turn
 
-    Strategy v1: system prompt + last N messages + the new user turn.
-    Strategy v2 (Phase 9A): the running `session_state.summary` is
-    always present in the SESSION STATE block and effectively replaces
-    older raw history past the truncation window.
+    `live_topic` is the topic-classifier's call on the current user
+    message. Passing it lets the register check
+    (`above_level_exploration` etc.) fire on turn 1 of a fresh session,
+    rather than waiting for the post-turn extractor to populate
+    `session_state.current_topic` after turn 1 completes.
     """
     settings = get_settings()
     system_messages: list[MessageInput] = [
@@ -186,6 +191,7 @@ def _build_context(
             profile=profile,
             session_state=session_state,
             top_progress=progress,
+            live_topic=live_topic,
         )
         system_messages.append(
             MessageInput(
@@ -255,12 +261,24 @@ async def run_tutor_turn(
     settings = get_settings()
     llm = get_llm_client()
 
-    history, profile, session_state, progress, grounding = await asyncio.gather(
+    (
+        history,
+        profile,
+        session_state,
+        progress,
+        grounding,
+        topic_classification,
+    ) = await asyncio.gather(
         asyncio.to_thread(repo.list_messages, session_id),
         asyncio.to_thread(repo.get_profile, user_id),
         asyncio.to_thread(repo.get_session_state, session_id),
         asyncio.to_thread(repo.get_top_progress, user_id, limit=8),
         build_grounding_context(user_message, "en"),
+        # Live topic classification of the current user message --
+        # lets the style-policy `register` check fire on turn 1 of
+        # a fresh session, before the post-turn extractor has had a
+        # chance to populate session_state.current_topic.
+        classify_topic(user_message),
     )
     await asyncio.to_thread(
         repo.append_message, session_id, "user", user_message
@@ -292,6 +310,7 @@ async def run_tutor_turn(
         session_state,
         progress,
         grounding,
+        live_topic=topic_classification.topic,
     )
 
     chunks: list[str] = []
