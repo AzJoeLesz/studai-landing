@@ -97,7 +97,7 @@
   },
   "onboarding": {
     "title": "Ismerkedjünk!",
-    "description": "Három gyors kérdés, hogy a korrepetitor hozzád tudjon igazodni. Kb. egy perc.",
+    "description": "Pár gyors lépés, hogy a korrepetitor hozzád tudjon igazodni. Kb. egy perc.",
     "skip": "Most kihagyom",
     "skipPlacement": "Kihagyom a gyors ellenőrzést",
     "next": "Tovább",
@@ -106,42 +106,72 @@
     "savedAndContinue": "Folytatás",
     "errorSaving": "Nem sikerült elmenteni a válaszokat. Próbáld újra.",
     "errorLoading": "Nem sikerült betölteni ezt a lépést. Próbáld újra.",
+    "aboutYou": {
+      "title": "Magadról",
+      "description": "Csak három dolog, hogy jó helyről induljunk.",
+      "displayNameLabel": "Hogyan szólítsunk?",
+      "displayNamePlaceholder": "Keresztnév vagy becenév",
+      "ageLabel": "Hány éves vagy?",
+      "agePlaceholder": "pl. 14",
+      "gradeLevelLabel": "Hányadikos vagy?",
+      "gradeLevelPlaceholder": "pl. 9. évfolyam, 11. osztály, egyetem 2. év",
+      "gradeLevelHelp": "Ezt használjuk arra, hogy az évfolyamodnak megfelelő témákkal kezdjünk. A Beállításokban bármikor megváltoztathatod."
+    },
     "personality": {
       "title": "Hogyan szeretsz tanulni?",
+      "titleKid": "Pár gyors kérdés",
       "q1": {
         "prompt": "Amikor elakadsz egy feladatnál, mi segít a legjobban?",
+        "promptKid": "Ha egy feladat nehéz, mi segít a legjobban?",
         "fastHints": "Adj gyorsan egy tippet",
+        "fastHintsKid": "Adj egy kis tippet",
         "figureOut": "Hadd jöjjek rá magamtól",
-        "workedExample": "Mutass egy hasonló példát"
+        "figureOutKid": "Először hadd próbáljam egyedül",
+        "workedExample": "Mutass egy hasonló példát",
+        "workedExampleKid": "Mutass egy hasonlót, ami már kész"
       },
       "q2": {
         "prompt": "A matek számodra főleg...",
+        "promptKid": "Milyen érzés számodra a matek?",
         "curious": "Érdekes és szórakoztató",
+        "curiousKid": "Jó móka!",
         "neutral": "Csak egy tantárgy",
-        "anxious": "Nehéz, kicsit szorongok tőle"
+        "neutralKid": "Olyan közepes",
+        "anxious": "Nehéz, kicsit szorongok tőle",
+        "anxiousKid": "Egy kicsit ijesztő"
       },
       "q3": {
         "prompt": "Milyen feladatokat szeretsz a legjobban?",
+        "promptKid": "Melyik feladatot szereted a legjobban?",
         "story": "Szöveges feladatokat, történettel",
+        "storyKid": "Szöveges feladatot, történettel",
         "pure": "Tiszta egyenleteket és számokat",
-        "visual": "Vizuális és geometriai feladatokat"
+        "pureKid": "Csak számokat és egyenleteket",
+        "visual": "Vizuális és geometriai feladatokat",
+        "visualKid": "Alakzatokat és képeket"
       }
     },
     "placement": {
       "title": "Gyors ellenőrzés (nem kötelező)",
-      "intro": "Öt feladat, hogy a korrepetitor lássa, körülbelül hol tartasz. Nincs jegy — válaszolj a legjobb tudásod szerint, vagy hagyd ki.",
+      "intro": "Öt feladat, hogy a korrepetitor lássa, körülbelül hol tartasz. Nincs jegy — válaszolj a legjobb tudásod szerint, vagy mondd, hogy nem tudod.",
       "start": "Megcsinálom a gyors ellenőrzést",
       "questionLabel": "Kérdés",
       "of": "/",
       "topicLabel": "Téma",
       "difficultyLabel": "Nehézség",
       "yourAnswer": "A válaszod",
-      "answerPlaceholder": "Írd be a válaszodat (vagy 'kihagy', ha nem tudod)",
+      "answerPlaceholder": "Ide írd a válaszod",
       "submit": "Válasz beküldése",
       "submitting": "Ellenőrzés...",
       "iDontKnow": "Nem tudom",
+      "feedbackCorrect": "Helyes!",
+      "feedbackIncorrect": "Nem egészen.",
+      "correctAnswerLabel": "A helyes válasz",
+      "nextQuestion": "Következő kérdés",
+      "viewResults": "Eredmény megnézése",
       "completedTitle": "Készen vagy!",
       "completedBody": "Köszi — a korrepetitor most már hozzád van igazítva. A Beállításokban bármikor újra megcsinálhatod a gyors ellenőrzést.",
+      "topicsHeading": "Itt tartasz most",
       "goToTutor": "Tovább a korrepetitorhoz",
       "alreadyCompleted": "Már megcsináltad a gyors ellenőrzést. Később újra megcsinálhatod, ha szeretnéd."
     },

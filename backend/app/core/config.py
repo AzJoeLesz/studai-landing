@@ -75,6 +75,13 @@ class Settings(BaseSettings):
             "small JSON completion per chat turn; keep cheap by default."
         ),
     )
+    placement_judge_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Model used by the placement-quiz answer judge (Phase 9E). "
+            "Single-token YES/NO output; cheap is fine."
+        ),
+    )
 
     # --- Tutor behavior -----------------------------------------------------
     tutor_max_history_messages: int = Field(

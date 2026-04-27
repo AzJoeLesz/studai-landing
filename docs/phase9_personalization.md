@@ -32,6 +32,33 @@ All five slices were implemented in a single pass. Status:
 3. (Optional) `python -m scripts.smoke_tutor_grounding` to confirm grounding still works alongside the new system blocks. Set `GROUNDING_DEBUG_LOG=true` once to verify the directives + state + progress blocks are appearing as expected; turn off again.
 4. (Optional eval pass) Add fixtures in `backend/evals/` that cover: 4th-grader-vs-10th-grader same input divergence, anxious-vs-curious affect divergence, 3rd-grader-asks-about-quadratics → `register == above_level_exploration`. Not built in this pass — open task.
 
+### Onboarding iteration (post first-pass demo testing)
+
+After running the first-cut onboarding, four real problems showed up. Fixes landed in a follow-up pass:
+
+| Problem | Fix shipped |
+|---------|-------------|
+| **`seedGradePriors()` was always returning 0** because grade_level wasn't asked anywhere in onboarding. Result: placement quiz fell back to its hardcoded `"linear equations"` topic for all 5 questions; only one row in `student_progress` after. | New first step **About you** in `app/[locale]/dashboard/onboarding/page.tsx` collects display_name, age, grade_level *before* personality. After save, calls `seedGradePriors()` immediately — now the priors table is seeded with grade-appropriate topics, and `_topic_for_placement_round` rotates through them. |
+| **Personality questions were one-size-fits-all**, slightly teen-leaning ("Math feels mostly..." reads weird for an 8-year-old). | i18n now ships paired keys: every question and option has both standard and `*Kid` variant. The personality step picks the kid variant when `age <= 11` (constant `KID_AGE_THRESHOLD` in the page). Both `en.json` and `hu.json` updated. |
+| **Self-graded ✓ / I-don't-know was a worthless signal** — kids tap ✓ either way, destroying the placement BKT update. | New `agents/answer_judge.py` + `prompts/placement_judge_v1.txt` — single-token YES/NO LLM judge that takes (problem, canonical answer, student answer) and returns a bool. Strict-string normalized fallback when the LLM call fails. Empty/skip/"I don't know"/"nem tudom" short-circuit to NO without a paid call. `placement/answer` endpoint now takes `student_answer: str` (with `problem_text` and `canonical_answer` echoed back for the judge), runs `judge_answer`, then continues with the existing BKT-IDEM pipeline. Returns `was_correct` and `canonical_answer` so the frontend can show feedback. New config flag: `placement_judge_model` (default `gpt-4o-mini`). |
+| **Word problems with `$N` currency rendered as broken italic math** ("Edward spent $6 to buy 2 books..." → `6tobuy2bookseachbookcosting...`). The corpus uses bare `$` as a currency symbol; `remark-math` was treating those as `$...$` LaTeX delimiters. | New `escapeBareCurrency()` in `components/chat/markdown-content.tsx`. Heuristic: if any `$...$` pair contains a math indicator (`\`, `^`, `_`, `{`, `}`, `=`), assume math and leave alone; otherwise escape every `$` as `\$`. Conservative — false-negative ("we left a real bug unrendered") is safer than false-positive ("we corrupted real math"). Runs before `normalizeMathDelimiters`. |
+
+**Frontend changes summary (this iteration):**
+- `app/[locale]/dashboard/onboarding/page.tsx` — new `Step` union with `aboutYou`, `feedback` added; `AboutYouCard`, `PlacementFeedbackCard` components; placement now uses a free-text `Input` + Submit instead of self-grade buttons; "I don't know" submits empty string and short-circuits to incorrect.
+- `lib/api/onboarding.ts` — `PlacementAnswerRequest` now has `student_answer`, `problem_text`, `canonical_answer`; `PlacementAnswerResponse` adds `was_correct` and `canonical_answer`.
+- `messages/{en,hu}.json` — full `onboarding.aboutYou.*` namespace + `*Kid` variants for every personality string + placement feedback strings (`feedbackCorrect`, `feedbackIncorrect`, `correctAnswerLabel`, `nextQuestion`, `viewResults`, `topicsHeading`).
+
+**Backend changes summary (this iteration):**
+- `backend/app/agents/answer_judge.py` (new)
+- `backend/app/prompts/placement_judge_v1.txt` (new)
+- `backend/app/api/onboarding.py` — `PlacementAnswerRequest`/`Response` updated; endpoint calls `judge_answer` before BKT update.
+- `backend/app/core/config.py` — added `placement_judge_model`.
+
+**Deferred to a later pass (still relevant for product polish):**
+- The placement quiz's first-question rotation currently sorts seeded priors by `(evidence_count asc, mastery_score asc)`, so a fresh user always sees their LOWEST-prior topics first. That can be a touch demotivating. Consider switching to median-mastery or shuffling once priors are denser.
+- The judge LLM call adds ~300-700ms latency between the user submitting and the feedback card appearing. Acceptable for a 5-question placement; if it ever feels sluggish, switch to streaming or pre-judge in parallel with the next-question fetch.
+- The corpus `problems.answer` field is sometimes verbose ("8 books, since 24 / 3 = 8"). The judge prompt handles it but the feedback card displays it verbatim, which can be cluttered. A tiny "extract canonical short answer" step at ingestion time would help — defer to a later content cleanup pass.
+
 ---
 
 ## TL;DR — what Phase 9 is, in one paragraph

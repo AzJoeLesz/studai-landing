@@ -37,12 +37,24 @@ export interface PlacementAnswerRequest {
   problem_id: string;
   topic: string;
   difficulty: string;
-  correct: boolean;
+  /** Free-text answer the student typed. Empty string = "I don't know". */
+  student_answer: string;
+  /**
+   * The exact problem text that was shown. The backend uses this to
+   * judge correctness without a second DB lookup.
+   */
+  problem_text: string;
+  /** Canonical answer from the corpus row, if any. */
+  canonical_answer: string | null;
 }
 
 export interface PlacementAnswerResponse {
   next: PlacementProblem | null;
   completed: boolean;
+  /** Backend's verdict on the answer just submitted. */
+  was_correct: boolean;
+  /** Echoed canonical answer so the UI can reveal it after submission. */
+  canonical_answer: string | null;
   summary: StudentProgress[] | null;
 }
 

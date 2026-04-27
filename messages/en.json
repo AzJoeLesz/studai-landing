@@ -97,7 +97,7 @@
   },
   "onboarding": {
     "title": "Let's get to know you",
-    "description": "Three quick questions so the tutor can adapt to you. Takes about a minute.",
+    "description": "A few quick steps so the tutor can adapt to you. Takes about a minute.",
     "skip": "Skip for now",
     "skipPlacement": "Skip the quick check",
     "next": "Next",
@@ -106,42 +106,72 @@
     "savedAndContinue": "Continue",
     "errorSaving": "Could not save your answers. Try again.",
     "errorLoading": "Could not load this step. Try again.",
+    "aboutYou": {
+      "title": "About you",
+      "description": "Just three things so we can pick the right starting point.",
+      "displayNameLabel": "What should we call you?",
+      "displayNamePlaceholder": "Your first name or nickname",
+      "ageLabel": "How old are you?",
+      "agePlaceholder": "e.g. 14",
+      "gradeLevelLabel": "What grade are you in?",
+      "gradeLevelPlaceholder": "e.g. Year 9, Grade 7, University 2nd year",
+      "gradeLevelHelp": "We use this to start with topics from your school year. You can change it later in Settings."
+    },
     "personality": {
       "title": "How do you like to learn?",
+      "titleKid": "A few quick questions",
       "q1": {
         "prompt": "When you're stuck on a problem, what helps most?",
+        "promptKid": "When a problem feels tricky, what helps you the most?",
         "fastHints": "Give me a hint quickly",
+        "fastHintsKid": "Give me a little hint",
         "figureOut": "Let me figure it out myself",
-        "workedExample": "Show me a similar example"
+        "figureOutKid": "Let me try by myself first",
+        "workedExample": "Show me a similar example",
+        "workedExampleKid": "Show me one done already"
       },
       "q2": {
         "prompt": "Math feels mostly...",
+        "promptKid": "How does math feel for you?",
         "curious": "Fun and interesting",
+        "curiousKid": "Fun!",
         "neutral": "Fine, just a subject",
-        "anxious": "Hard, I get a bit anxious"
+        "neutralKid": "It's okay",
+        "anxious": "Hard, I get a bit anxious",
+        "anxiousKid": "A bit scary"
       },
       "q3": {
         "prompt": "What kind of problems do you like best?",
+        "promptKid": "Which kind of problem do you like best?",
         "story": "Word problems with stories",
+        "storyKid": "Word problems with a story",
         "pure": "Pure equations and numbers",
-        "visual": "Visual and geometry problems"
+        "pureKid": "Just numbers and equations",
+        "visual": "Visual and geometry problems",
+        "visualKid": "Shapes and pictures"
       }
     },
     "placement": {
       "title": "Quick check (optional)",
-      "intro": "Five problems so the tutor can see roughly where you are. There's no grade — just answer your best, or skip.",
+      "intro": "Five problems so the tutor can see roughly where you are. There's no grade — just answer your best, or say you don't know.",
       "start": "Take the quick check",
       "questionLabel": "Question",
       "of": "of",
       "topicLabel": "Topic",
       "difficultyLabel": "Difficulty",
       "yourAnswer": "Your answer",
-      "answerPlaceholder": "Type your answer (or 'skip' if you don't know)",
+      "answerPlaceholder": "Type your answer here",
       "submit": "Submit answer",
       "submitting": "Checking...",
       "iDontKnow": "I don't know",
+      "feedbackCorrect": "Correct!",
+      "feedbackIncorrect": "Not quite.",
+      "correctAnswerLabel": "Correct answer",
+      "nextQuestion": "Next question",
+      "viewResults": "See results",
       "completedTitle": "All done!",
       "completedBody": "Thanks — the tutor is now calibrated to you. You can revisit the quick check from Settings any time.",
+      "topicsHeading": "Where you are now",
       "goToTutor": "Open the tutor",
       "alreadyCompleted": "You've already done the quick check. You can re-take it later if you want."
     },

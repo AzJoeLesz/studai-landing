@@ -1,6 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +16,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { StatusMessage } from "@/components/ui/status-message";
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { useRouter } from "@/i18n/navigation";
@@ -26,32 +33,47 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { StudentProgress } from "@/lib/api/types";
 
 /**
- * Onboarding flow for newly-registered students.
+ * Onboarding flow for newly-registered students. Phase 9 + the iteration
+ * fixes after first-test feedback.
  *
  * Steps:
- *   1. Personality micro-survey (3 questions). Required to proceed.
- *      Saved into `profiles.preferences` JSONB. After save, also calls
- *      `/onboarding/seed-priors` so the tutor's first chat already has
- *      grade-derived mastery priors.
+ *   0. About you  — display name, age, grade level. Saved to `profiles`.
+ *      MUST come first so:
+ *        - the personality questions can be age-adapted
+ *        - `seedGradePriors()` actually has a grade to seed from
+ *        - the placement quiz draws from grade-appropriate topics
  *
- *   2. Optional placement quiz (5 adaptive questions). Skippable. Each
- *      answer feeds the BKT-IDEM mastery model. The user self-grades
- *      ("I got it right" / "I don't know") for the MVP — automatic
- *      correctness checking arrives with the Phase 10 step-graphs.
+ *   1. Personality micro-survey (3 questions). Question phrasing branches
+ *      on age (kid-friendly variant for age <= 11). Saved into
+ *      `profiles.preferences` JSONB.
  *
- *   3. Completion. Routes to /dashboard/sessions.
+ *   2. Optional placement quiz (5 staircase questions). Each answer is a
+ *      free-text input judged by the backend's LLM judge — no more
+ *      self-grading. Per-answer feedback ("Correct" / "Not quite —
+ *      correct answer was X") shown briefly between questions.
  *
- * The route is reachable from the auth flow (post-signup redirect — see
- * `app/[locale]/page.tsx`) and from a "Re-take" link in Settings.
+ *   3. Completion screen with mastery summary.
+ *
+ * Reachable from the auth flow (sessions page redirects new users) and
+ * from the "Re-take" link in Settings.
  */
 
 const POST_DONE_PATH = "/dashboard/sessions";
+const KID_AGE_THRESHOLD = 11; // age <= this -> use the *Kid string variants
 
 type Step =
+  | { kind: "aboutYou" }
   | { kind: "personality" }
   | { kind: "placementIntro" }
   | { kind: "placement"; current: PlacementProblem }
+  | { kind: "feedback"; result: PlacementAnswerResponse; lastAnswer: string }
   | { kind: "completed"; summary: StudentProgress[] | null };
+
+interface AboutYouAnswers {
+  display_name: string;
+  age: string; // form field; coerced to int on save
+  grade_level: string;
+}
 
 interface PersonalityAnswers {
   hint_style: "fast_hints" | "figure_out" | "worked_example" | "";
@@ -59,7 +81,13 @@ interface PersonalityAnswers {
   example_flavor: "story" | "pure" | "visual" | "";
 }
 
-const EMPTY_ANSWERS: PersonalityAnswers = {
+const EMPTY_ABOUT: AboutYouAnswers = {
+  display_name: "",
+  age: "",
+  grade_level: "",
+};
+
+const EMPTY_PERSONALITY: PersonalityAnswers = {
   hint_style: "",
   math_affect: "",
   example_flavor: "",
@@ -70,13 +98,20 @@ export default function OnboardingPage() {
   const router = useRouter();
   const supabase = getSupabaseBrowserClient();
 
-  const [step, setStep] = useState<Step>({ kind: "personality" });
-  const [answers, setAnswers] = useState<PersonalityAnswers>(EMPTY_ANSWERS);
+  const [step, setStep] = useState<Step>({ kind: "aboutYou" });
+  const [about, setAbout] = useState<AboutYouAnswers>(EMPTY_ABOUT);
+  const [personality, setPersonality] =
+    useState<PersonalityAnswers>(EMPTY_PERSONALITY);
+  const [savingAbout, setSavingAbout] = useState(false);
   const [savingPersonality, setSavingPersonality] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Hydrate any partial preferences the user may have already saved.
+  const ageNum = parseInt(about.age, 10);
+  const isKid = Number.isInteger(ageNum) && ageNum <= KID_AGE_THRESHOLD;
+
+  // Hydrate any partial profile/preferences the user may have already saved
+  // (so re-takes via the Settings link prefill correctly).
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -87,24 +122,74 @@ export default function OnboardingPage() {
       }
       const { data } = await supabase
         .from("profiles")
-        .select("preferences")
+        .select("display_name, age, grade_level, preferences")
         .eq("id", auth.user.id)
         .maybeSingle();
       if (cancelled) return;
-      const prefs = (data?.preferences ?? {}) as Partial<PersonalityAnswers>;
-      setAnswers({
-        hint_style: (prefs.hint_style as PersonalityAnswers["hint_style"]) || "",
-        math_affect:
-          (prefs.math_affect as PersonalityAnswers["math_affect"]) || "",
-        example_flavor:
-          (prefs.example_flavor as PersonalityAnswers["example_flavor"]) || "",
-      });
+      if (data) {
+        setAbout({
+          display_name: data.display_name ?? "",
+          age: data.age != null ? String(data.age) : "",
+          grade_level: data.grade_level ?? "",
+        });
+        const prefs =
+          (data.preferences ?? {}) as Partial<PersonalityAnswers>;
+        setPersonality({
+          hint_style:
+            (prefs.hint_style as PersonalityAnswers["hint_style"]) || "",
+          math_affect:
+            (prefs.math_affect as PersonalityAnswers["math_affect"]) || "",
+          example_flavor:
+            (prefs.example_flavor as PersonalityAnswers["example_flavor"]) ||
+            "",
+        });
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [supabase, router]);
 
+  // ---- Step 0: save about-you, then seed grade priors ----------------
+  async function saveAboutAndContinue() {
+    setSavingAbout(true);
+    setErrorMessage(null);
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) {
+        router.replace("/");
+        return;
+      }
+      const ageParsed = about.age.trim() ? parseInt(about.age, 10) : NaN;
+      const ageValue =
+        Number.isInteger(ageParsed) && ageParsed >= 5 && ageParsed <= 30
+          ? ageParsed
+          : null;
+      const { error } = await supabase.from("profiles").upsert({
+        id: auth.user.id,
+        display_name: about.display_name.trim() || null,
+        age: ageValue,
+        grade_level: about.grade_level.trim() || null,
+      });
+      if (error) throw new Error(error.message);
+
+      // Seed grade priors NOW that we have a grade level on file. This is
+      // what powers grade-appropriate topic variety in the placement
+      // quiz that's two steps ahead.
+      try {
+        await seedGradePriors();
+      } catch {
+        // non-fatal -- the tutor still works without seeded priors
+      }
+      setStep({ kind: "personality" });
+    } catch {
+      setErrorMessage(t("errorSaving"));
+    } finally {
+      setSavingAbout(false);
+    }
+  }
+
+  // ---- Step 1: save personality, then either offer placement or finish -
   async function savePersonalityAndContinue() {
     setSavingPersonality(true);
     setErrorMessage(null);
@@ -115,24 +200,15 @@ export default function OnboardingPage() {
         return;
       }
       const merged = {
-        hint_style: answers.hint_style || null,
-        math_affect: answers.math_affect || null,
-        example_flavor: answers.example_flavor || null,
+        hint_style: personality.hint_style || null,
+        math_affect: personality.math_affect || null,
+        example_flavor: personality.example_flavor || null,
       };
       const { error } = await supabase
         .from("profiles")
         .upsert({ id: auth.user.id, preferences: merged });
-      if (error) {
-        throw new Error(error.message);
-      }
-      // Seed grade priors in the background — failures here are not
-      // fatal, the tutor still works without seeded priors.
-      try {
-        await seedGradePriors();
-      } catch {
-        // ignore
-      }
-      // Decide whether to offer placement: skip if already completed.
+      if (error) throw new Error(error.message);
+
       try {
         const status = await getPlacementStatus();
         if (status.completed) {
@@ -140,7 +216,7 @@ export default function OnboardingPage() {
           return;
         }
       } catch {
-        // If we can't check status, still let the user opt in.
+        // fall through and show the intro anyway
       }
       setStep({ kind: "placementIntro" });
     } catch {
@@ -150,6 +226,7 @@ export default function OnboardingPage() {
     }
   }
 
+  // ---- Step 2: placement -------------------------------------------------
   async function beginPlacement() {
     setErrorMessage(null);
     try {
@@ -164,22 +241,21 @@ export default function OnboardingPage() {
     }
   }
 
-  async function answerPlacement(correct: boolean) {
+  async function answerPlacement(studentAnswer: string) {
     if (step.kind !== "placement" || submittingAnswer) return;
     setSubmittingAnswer(true);
     setErrorMessage(null);
     try {
-      const res: PlacementAnswerResponse = await submitPlacementAnswer({
+      const res = await submitPlacementAnswer({
         problem_id: step.current.problem_id,
         topic: step.current.topic,
         difficulty: step.current.difficulty,
-        correct,
+        student_answer: studentAnswer,
+        problem_text: step.current.problem_text,
+        canonical_answer: step.current.answer,
       });
-      if (res.completed || !res.next) {
-        setStep({ kind: "completed", summary: res.summary ?? null });
-      } else {
-        setStep({ kind: "placement", current: res.next });
-      }
+      // Show feedback for this answer; user clicks through to next.
+      setStep({ kind: "feedback", result: res, lastAnswer: studentAnswer });
     } catch {
       setErrorMessage(t("errorSaving"));
     } finally {
@@ -187,12 +263,35 @@ export default function OnboardingPage() {
     }
   }
 
+  function continueAfterFeedback() {
+    if (step.kind !== "feedback") return;
+    const { result } = step;
+    if (result.completed || !result.next) {
+      setStep({ kind: "completed", summary: result.summary });
+    } else {
+      setStep({ kind: "placement", current: result.next });
+    }
+  }
+
+  // ---- Render ----------------------------------------------------------
+  const aboutComplete = useMemo(
+    () =>
+      Boolean(
+        about.display_name.trim() &&
+          about.grade_level.trim() &&
+          (about.age.trim() === "" || Number.isInteger(parseInt(about.age, 10))),
+      ),
+    [about],
+  );
+
   const personalityComplete = useMemo(
     () =>
       Boolean(
-        answers.hint_style && answers.math_affect && answers.example_flavor,
+        personality.hint_style &&
+          personality.math_affect &&
+          personality.example_flavor,
       ),
-    [answers],
+    [personality],
   );
 
   return (
@@ -202,14 +301,26 @@ export default function OnboardingPage() {
         <p className="mt-2 text-sm text-muted-foreground">{t("description")}</p>
       </header>
 
+      {step.kind === "aboutYou" && (
+        <AboutYouCard
+          values={about}
+          onChange={setAbout}
+          onContinue={saveAboutAndContinue}
+          onSkip={() => router.replace(POST_DONE_PATH)}
+          saving={savingAbout}
+          canContinue={aboutComplete}
+        />
+      )}
+
       {step.kind === "personality" && (
         <PersonalityCard
-          answers={answers}
-          onChange={setAnswers}
+          answers={personality}
+          onChange={setPersonality}
           onContinue={savePersonalityAndContinue}
           onSkip={() => router.replace(POST_DONE_PATH)}
           saving={savingPersonality}
           canContinue={personalityComplete}
+          isKid={isKid}
         />
       )}
 
@@ -229,6 +340,14 @@ export default function OnboardingPage() {
         />
       )}
 
+      {step.kind === "feedback" && (
+        <PlacementFeedbackCard
+          result={step.result}
+          lastAnswer={step.lastAnswer}
+          onContinue={continueAfterFeedback}
+        />
+      )}
+
       {step.kind === "completed" && (
         <CompletedCard
           summary={step.summary}
@@ -244,7 +363,102 @@ export default function OnboardingPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: personality micro-survey
+// Step 0: about you
+// ---------------------------------------------------------------------------
+interface AboutYouCardProps {
+  values: AboutYouAnswers;
+  onChange: (next: AboutYouAnswers) => void;
+  onContinue: () => void;
+  onSkip: () => void;
+  saving: boolean;
+  canContinue: boolean;
+}
+
+function AboutYouCard({
+  values,
+  onChange,
+  onContinue,
+  onSkip,
+  saving,
+  canContinue,
+}: AboutYouCardProps) {
+  const t = useTranslations("onboarding.aboutYou");
+  const tShared = useTranslations("onboarding");
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!canContinue || saving) return;
+    onContinue();
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("title")}</CardTitle>
+        <CardDescription>{t("description")}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={submit} className="flex flex-col gap-5">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="display_name">{t("displayNameLabel")}</Label>
+            <Input
+              id="display_name"
+              value={values.display_name}
+              placeholder={t("displayNamePlaceholder")}
+              onChange={(e) =>
+                onChange({ ...values, display_name: e.target.value })
+              }
+              maxLength={80}
+              autoFocus
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-[120px_1fr]">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="age">{t("ageLabel")}</Label>
+              <Input
+                id="age"
+                type="number"
+                inputMode="numeric"
+                min={5}
+                max={30}
+                value={values.age}
+                placeholder={t("agePlaceholder")}
+                onChange={(e) => onChange({ ...values, age: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="grade_level">{t("gradeLevelLabel")}</Label>
+              <Input
+                id="grade_level"
+                value={values.grade_level}
+                placeholder={t("gradeLevelPlaceholder")}
+                onChange={(e) =>
+                  onChange({ ...values, grade_level: e.target.value })
+                }
+                maxLength={80}
+                required
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("gradeLevelHelp")}
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+            <Button type="submit" disabled={!canContinue || saving}>
+              {saving ? tShared("saving") : tShared("savedAndContinue")}
+            </Button>
+            <Button type="button" variant="ghost" onClick={onSkip}>
+              {tShared("skip")}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: personality micro-survey (age-aware phrasing)
 // ---------------------------------------------------------------------------
 interface PersonalityCardProps {
   answers: PersonalityAnswers;
@@ -253,6 +467,7 @@ interface PersonalityCardProps {
   onSkip: () => void;
   saving: boolean;
   canContinue: boolean;
+  isKid: boolean;
 }
 
 function PersonalityCard({
@@ -262,25 +477,29 @@ function PersonalityCard({
   onSkip,
   saving,
   canContinue,
+  isKid,
 }: PersonalityCardProps) {
-  const t = useTranslations("onboarding");
+  const t = useTranslations("onboarding.personality");
+  const tShared = useTranslations("onboarding");
+
+  // Helper: pick the kid-variant key when isKid, else the standard key.
+  // Each question has both `prompt` / `promptKid` and per-option pairs.
+  const k = (base: string) => (isKid ? `${base}Kid` : base);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("personality.title")}</CardTitle>
+        <CardTitle>{isKid ? t("titleKid") : t("title")}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
         <ChoiceGroup
-          prompt={t("personality.q1.prompt")}
+          prompt={t(k("q1.prompt"))}
           name="hint_style"
           value={answers.hint_style}
           options={[
-            { value: "fast_hints", label: t("personality.q1.fastHints") },
-            { value: "figure_out", label: t("personality.q1.figureOut") },
-            {
-              value: "worked_example",
-              label: t("personality.q1.workedExample"),
-            },
+            { value: "fast_hints", label: t(k("q1.fastHints")) },
+            { value: "figure_out", label: t(k("q1.figureOut")) },
+            { value: "worked_example", label: t(k("q1.workedExample")) },
           ]}
           onSelect={(value) =>
             onChange({
@@ -290,13 +509,13 @@ function PersonalityCard({
           }
         />
         <ChoiceGroup
-          prompt={t("personality.q2.prompt")}
+          prompt={t(k("q2.prompt"))}
           name="math_affect"
           value={answers.math_affect}
           options={[
-            { value: "curious", label: t("personality.q2.curious") },
-            { value: "neutral", label: t("personality.q2.neutral") },
-            { value: "anxious", label: t("personality.q2.anxious") },
+            { value: "curious", label: t(k("q2.curious")) },
+            { value: "neutral", label: t(k("q2.neutral")) },
+            { value: "anxious", label: t(k("q2.anxious")) },
           ]}
           onSelect={(value) =>
             onChange({
@@ -306,19 +525,18 @@ function PersonalityCard({
           }
         />
         <ChoiceGroup
-          prompt={t("personality.q3.prompt")}
+          prompt={t(k("q3.prompt"))}
           name="example_flavor"
           value={answers.example_flavor}
           options={[
-            { value: "story", label: t("personality.q3.story") },
-            { value: "pure", label: t("personality.q3.pure") },
-            { value: "visual", label: t("personality.q3.visual") },
+            { value: "story", label: t(k("q3.story")) },
+            { value: "pure", label: t(k("q3.pure")) },
+            { value: "visual", label: t(k("q3.visual")) },
           ]}
           onSelect={(value) =>
             onChange({
               ...answers,
-              example_flavor:
-                value as PersonalityAnswers["example_flavor"],
+              example_flavor: value as PersonalityAnswers["example_flavor"],
             })
           }
         />
@@ -329,10 +547,10 @@ function PersonalityCard({
             onClick={onContinue}
             disabled={!canContinue || saving}
           >
-            {saving ? t("saving") : t("savedAndContinue")}
+            {saving ? tShared("saving") : tShared("savedAndContinue")}
           </Button>
           <Button type="button" variant="ghost" onClick={onSkip}>
-            {t("skip")}
+            {tShared("skip")}
           </Button>
         </div>
       </CardContent>
@@ -394,7 +612,7 @@ function ChoiceGroup({
 }
 
 // ---------------------------------------------------------------------------
-// Step 2a: placement quiz intro
+// Step 2a: placement intro
 // ---------------------------------------------------------------------------
 interface PlacementIntroCardProps {
   onStart: () => void;
@@ -403,15 +621,16 @@ interface PlacementIntroCardProps {
 
 function PlacementIntroCard({ onStart, onSkip }: PlacementIntroCardProps) {
   const t = useTranslations("onboarding");
+  const tP = useTranslations("onboarding.placement");
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("placement.title")}</CardTitle>
-        <CardDescription>{t("placement.intro")}</CardDescription>
+        <CardTitle>{tP("title")}</CardTitle>
+        <CardDescription>{tP("intro")}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
         <Button type="button" onClick={onStart}>
-          {t("placement.start")}
+          {tP("start")}
         </Button>
         <Button type="button" variant="ghost" onClick={onSkip}>
           {t("skipPlacement")}
@@ -422,12 +641,12 @@ function PlacementIntroCard({ onStart, onSkip }: PlacementIntroCardProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2b: a single placement question
+// Step 2b: a single placement question (free-text answer + Submit)
 // ---------------------------------------------------------------------------
 interface PlacementQuestionCardProps {
   problem: PlacementProblem;
   submitting: boolean;
-  onAnswer: (correct: boolean) => void;
+  onAnswer: (studentAnswer: string) => void;
   onSkipQuiz: () => void;
 }
 
@@ -440,24 +659,31 @@ function PlacementQuestionCard({
   onSkipQuiz,
 }: PlacementQuestionCardProps) {
   const t = useTranslations("onboarding");
-  const [reveal, setReveal] = useState(false);
+  const tP = useTranslations("onboarding.placement");
+  const [answer, setAnswer] = useState("");
 
-  // Reset the "show me the answer" toggle when we move to a new question.
+  // Reset the input when we move to a new question.
   useEffect(() => {
-    setReveal(false);
+    setAnswer("");
   }, [problem.problem_id]);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (submitting) return;
+    onAnswer(answer);
+  }
 
   return (
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <CardTitle className="text-lg">
-            {t("placement.questionLabel")} {problem.question_index} {t("placement.of")}{" "}
+            {tP("questionLabel")} {problem.question_index} {tP("of")}{" "}
             {PLACEMENT_TOTAL}
           </CardTitle>
           <p className="text-xs text-muted-foreground">
-            {t("placement.topicLabel")}: <strong>{problem.topic}</strong> ·{" "}
-            {t("placement.difficultyLabel")}: <strong>{problem.difficulty}</strong>
+            {tP("topicLabel")}: <strong>{problem.topic}</strong> ·{" "}
+            {tP("difficultyLabel")}: <strong>{problem.difficulty}</strong>
           </p>
         </div>
       </CardHeader>
@@ -466,50 +692,83 @@ function PlacementQuestionCard({
           <MarkdownContent>{problem.problem_text}</MarkdownContent>
         </div>
 
-        <div className="flex flex-col gap-2 text-sm text-muted-foreground">
-          <p>{t("placement.yourAnswer")}:</p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:gap-3">
-            <Button
-              type="button"
-              onClick={() => onAnswer(true)}
-              disabled={submitting}
-            >
-              {submitting ? t("placement.submitting") : "✓"}
+        <form onSubmit={submit} className="flex flex-col gap-2">
+          <Label htmlFor="placement_answer">{tP("yourAnswer")}</Label>
+          <Input
+            id="placement_answer"
+            value={answer}
+            placeholder={tP("answerPlaceholder")}
+            onChange={(e) => setAnswer(e.target.value)}
+            disabled={submitting}
+            autoFocus
+            maxLength={2000}
+          />
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-3">
+            <Button type="submit" disabled={submitting}>
+              {submitting ? tP("submitting") : tP("submit")}
             </Button>
             <Button
               type="button"
               variant="outline"
-              onClick={() => onAnswer(false)}
+              onClick={() => onAnswer("")}
               disabled={submitting}
             >
-              {t("placement.iDontKnow")}
+              {tP("iDontKnow")}
+            </Button>
+            <div className="flex-1" />
+            <Button type="button" variant="ghost" onClick={onSkipQuiz}>
+              {t("skipPlacement")}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Tap ✓ if you got it right, or “{t("placement.iDontKnow")}” if not.
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2c: feedback after each answer
+// ---------------------------------------------------------------------------
+interface PlacementFeedbackCardProps {
+  result: PlacementAnswerResponse;
+  lastAnswer: string;
+  onContinue: () => void;
+}
+
+function PlacementFeedbackCard({
+  result,
+  lastAnswer,
+  onContinue,
+}: PlacementFeedbackCardProps) {
+  const tP = useTranslations("onboarding.placement");
+  const correct = result.was_correct;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">
+          {correct ? tP("feedbackCorrect") : tP("feedbackIncorrect")}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="text-sm">
+          <p className="text-muted-foreground">
+            {tP("yourAnswer")}:{" "}
+            <span className="text-foreground">
+              {lastAnswer.trim() ? lastAnswer : `(${tP("iDontKnow")})`}
+            </span>
           </p>
-        </div>
-
-        {problem.answer && (
-          <details
-            className="rounded-md border border-border bg-background p-3"
-            open={reveal}
-            onToggle={(e) => setReveal((e.target as HTMLDetailsElement).open)}
-          >
-            <summary className="cursor-pointer text-sm font-medium">
-              Show answer
-            </summary>
-            <div className="mt-2 text-sm">
-              <MarkdownContent>{problem.answer}</MarkdownContent>
+          {!correct && result.canonical_answer && (
+            <div className="mt-2">
+              <p className="text-muted-foreground">{tP("correctAnswerLabel")}:</p>
+              <div className="text-foreground">
+                <MarkdownContent>{result.canonical_answer}</MarkdownContent>
+              </div>
             </div>
-          </details>
-        )}
-
-        <div className="flex justify-end">
-          <Button type="button" variant="ghost" onClick={onSkipQuiz}>
-            {t("skipPlacement")}
-          </Button>
+          )}
         </div>
+        <Button type="button" onClick={onContinue}>
+          {result.completed ? tP("viewResults") : tP("nextQuestion")}
+        </Button>
       </CardContent>
     </Card>
   );
@@ -524,21 +783,21 @@ interface CompletedCardProps {
 }
 
 function CompletedCard({ summary, onContinue }: CompletedCardProps) {
-  const t = useTranslations("onboarding");
+  const tP = useTranslations("onboarding.placement");
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("placement.completedTitle")}</CardTitle>
-        <CardDescription>{t("placement.completedBody")}</CardDescription>
+        <CardTitle>{tP("completedTitle")}</CardTitle>
+        <CardDescription>{tP("completedBody")}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {summary && summary.length > 0 && (
           <div className="rounded-md border border-border bg-muted/30 p-4 text-sm">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Topics
+              {tP("topicsHeading")}
             </p>
             <ul className="flex flex-col gap-1">
-              {summary.slice(0, 6).map((row) => (
+              {summary.slice(0, 8).map((row) => (
                 <li
                   key={`${row.user_id}-${row.topic}`}
                   className="flex items-baseline justify-between gap-3"
@@ -553,7 +812,7 @@ function CompletedCard({ summary, onContinue }: CompletedCardProps) {
           </div>
         )}
         <Button type="button" onClick={onContinue}>
-          {t("placement.goToTutor")}
+          {tP("goToTutor")}
         </Button>
       </CardContent>
     </Card>

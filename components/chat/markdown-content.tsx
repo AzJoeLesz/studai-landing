@@ -35,6 +35,38 @@ function normalizeMathDelimiters(text: string): string {
 }
 
 /**
+ * Escape bare `$` that look like currency, not math delimiters.
+ *
+ * Some corpus problems (Hendrycks MATH word problems, GSM8K, etc.) use
+ * bare `$` as a currency symbol — "Edward spent $6 to buy 2 books and
+ * now he has $12.". remark-math sees those `$...$` pairs and treats
+ * the text between them as inline LaTeX, stripping spaces and
+ * rendering in math italic. The result is unreadable.
+ *
+ * Heuristic:
+ *  - If the text contains NO `$`, do nothing.
+ *  - If the text has at least one `$...$` pair containing a real LaTeX
+ *    indicator (`\`, `^`, `_`, `{`, `}`, `=`), assume it's math; leave alone.
+ *  - Otherwise treat every `$` as currency and escape it as `\$`.
+ *
+ * Conservative on purpose: false-negative ("we left a real bug
+ * unrendered") is much better than false-positive ("we corrupted real
+ * math the tutor wrote"). This runs BEFORE `normalizeMathDelimiters`.
+ */
+function escapeBareCurrency(text: string): string {
+  if (!text.includes("$")) return text;
+  // Look for $...$ pairs whose body contains a math indicator.
+  const mathPair = /\$([^$\n]{0,200})\$/g;
+  const MATH_HINT = /[\\^_{}=]/;
+  let m: RegExpExecArray | null;
+  while ((m = mathPair.exec(text)) !== null) {
+    if (MATH_HINT.test(m[1])) return text; // leave the whole block alone
+  }
+  // No math-y content inside any pair → treat all `$` as currency.
+  return text.replace(/\$/g, "\\$");
+}
+
+/**
  * Renders chat content as Markdown with math support.
  *
  * Pipeline:
@@ -54,7 +86,7 @@ export function MarkdownContent({ children, className }: MarkdownContentProps) {
         rehypePlugins={[rehypeKatex]}
         components={markdownComponents}
       >
-        {normalizeMathDelimiters(children)}
+        {normalizeMathDelimiters(escapeBareCurrency(children))}
       </ReactMarkdown>
     </div>
   );

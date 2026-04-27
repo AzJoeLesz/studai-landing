@@ -28,6 +28,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.agents import answer_judge
 from app.agents import grade_priors as priors_mod
 from app.agents import mastery as mastery_mod
 from app.api.deps import CurrentUser
@@ -121,12 +122,21 @@ class PlacementAnswerRequest(BaseModel):
     problem_id: UUID
     topic: str = Field(..., min_length=1, max_length=120)
     difficulty: str = Field(..., min_length=1, max_length=40)
-    correct: bool
+    # Free-text answer the student typed in. Empty string is treated
+    # as "I don't know" (an explicit incorrect answer).
+    student_answer: str = Field(..., max_length=2000)
+    # Echo back what we showed them, so the judge can compare without a
+    # second DB lookup. Trusted because we control the frontend; an
+    # adversarial caller can at worst confuse their own placement.
+    problem_text: str = Field(..., max_length=8000)
+    canonical_answer: str | None = Field(default=None, max_length=2000)
 
 
 class PlacementAnswerResponse(BaseModel):
     next: PlacementProblem | None
     completed: bool
+    was_correct: bool
+    canonical_answer: str | None
     summary: list[StudentProgress] | None = None
 
 
@@ -236,9 +246,21 @@ async def placement_answer(
     payload: PlacementAnswerRequest,
     user: CurrentUser,
 ) -> PlacementAnswerResponse:
-    """Record an answer + apply BKT-IDEM + return the next problem (or finish)."""
-    # Record attempt + progress update synchronously (the user is waiting
-    # on the next problem and these are tiny writes).
+    """Judge a free-text answer, apply BKT-IDEM, return the next problem.
+
+    1. LLM judge decides correctness (with a strict-string fallback if
+       the LLM call fails). Empty string / "I don't know" short-circuits
+       to incorrect without a paid call.
+    2. Record `placement_attempts` row.
+    3. BKT-IDEM update on `student_progress` with evidence_source='placement'.
+    4. Pick + return the next problem, or completion summary.
+    """
+    was_correct = await answer_judge.judge_answer(
+        problem_text=payload.problem_text,
+        canonical_answer=payload.canonical_answer,
+        student_answer=payload.student_answer,
+    )
+
     await asyncio.to_thread(
         repo.record_placement_attempt,
         PlacementAttempt(
@@ -246,14 +268,14 @@ async def placement_answer(
             problem_id=payload.problem_id,
             topic=payload.topic,
             difficulty=payload.difficulty,
-            correct=payload.correct,
+            correct=was_correct,
         ),
     )
     await asyncio.to_thread(
         mastery_mod.apply_graded_update,
         user_id=user.user_id,
         topic=payload.topic,
-        correct=payload.correct,
+        correct=was_correct,
         difficulty=payload.difficulty,
         evidence_source="placement",
     )
@@ -266,7 +288,11 @@ async def placement_answer(
             repo.get_top_progress, user.user_id, limit=10
         )
         return PlacementAnswerResponse(
-            next=None, completed=True, summary=summary
+            next=None,
+            completed=True,
+            was_correct=was_correct,
+            canonical_answer=payload.canonical_answer,
+            summary=summary,
         )
 
     next_topic = await asyncio.to_thread(
@@ -277,7 +303,7 @@ async def placement_answer(
         user.user_id,
         next_topic,
         payload.difficulty,
-        payload.correct,
+        was_correct,
     )
     next_problem = await asyncio.to_thread(
         repo.fetch_problem_for_placement,
@@ -296,7 +322,11 @@ async def placement_answer(
             repo.get_top_progress, user.user_id, limit=10
         )
         return PlacementAnswerResponse(
-            next=None, completed=True, summary=summary
+            next=None,
+            completed=True,
+            was_correct=was_correct,
+            canonical_answer=payload.canonical_answer,
+            summary=summary,
         )
     return PlacementAnswerResponse(
         next=_problem_to_placement(
@@ -305,6 +335,8 @@ async def placement_answer(
             question_index=len(attempts) + 1,
         ),
         completed=False,
+        was_correct=was_correct,
+        canonical_answer=payload.canonical_answer,
     )
 
 
