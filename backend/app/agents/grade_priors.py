@@ -215,13 +215,25 @@ def placement_profile_for_band(band: str | None) -> PlacementProfile:
 
     Unknown / missing band -> a permissive default that still excludes
     the noisy synthetic datasets (asdiv, svamp, mawps).
+
+    Why no `gsm8k` from band 9-10 onward (despite `gsm8k` being
+    well-curated): gsm8k is grade-2-to-8 word problems. For a 10th
+    grader, gsm8k content (e.g. "Ali has 7 bills of $5 and 1 bill of
+    $10 -- how much in total?") is below their level, so it makes the
+    placement quiz feel insultingly easy and produces no useful
+    signal. Restrict to hendrycks for the placement quiz at high-school
+    bands. Live-tutor RAG still uses the full corpus.
+
+    Why no `openstax` for placement: `openstax` lives in
+    `teaching_material_chunks`, not in `problems` -- it never produces
+    placement candidates anyway. Listing it was misleading.
     """
     if band in ("K-2", "3-5", "6-8"):
         # Grade school. Hendrycks at any difficulty is too advanced.
         return PlacementProfile(sources=("gsm8k",), difficulty_map=None)
     if band == "9-10":
         return PlacementProfile(
-            sources=("hendrycks", "gsm8k"),
+            sources=("hendrycks",),
             difficulty_map={
                 "easy":   ["Level 1"],
                 "medium": ["Level 1", "Level 2"],
@@ -230,7 +242,7 @@ def placement_profile_for_band(band: str | None) -> PlacementProfile:
         )
     if band == "11-12":
         return PlacementProfile(
-            sources=("hendrycks", "openstax"),
+            sources=("hendrycks",),
             difficulty_map={
                 "easy":   ["Level 2"],
                 "medium": ["Level 3"],

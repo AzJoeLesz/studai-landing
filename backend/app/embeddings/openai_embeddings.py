@@ -21,6 +21,14 @@ DEFAULT_MODEL = "text-embedding-3-small"
 DEFAULT_DIM = 1536
 MAX_BATCH = 96
 
+# OpenAI's Python SDK ships with NO read timeout by default. A single
+# stuck request (rare but real -- happened once mid-batch on a 37k
+# MathQA ingestion) can wedge the entire pipeline indefinitely with
+# zero log output. Set an explicit 60s ceiling so the worst case is a
+# loud failure that the caller can retry, not a silent hang.
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+_DEFAULT_MAX_RETRIES = 3
+
 
 class OpenAIEmbeddingsClient:
     def __init__(
@@ -29,7 +37,11 @@ class OpenAIEmbeddingsClient:
         model: str = DEFAULT_MODEL,
     ) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=api_key or settings.openai_api_key)
+        self._client = AsyncOpenAI(
+            api_key=api_key or settings.openai_api_key,
+            timeout=_DEFAULT_TIMEOUT_SECONDS,
+            max_retries=_DEFAULT_MAX_RETRIES,
+        )
         self._model = model
 
     @property

@@ -63,8 +63,15 @@ Reply with exactly one word: YES or NO.
 async def _check_answer_leak(
     user_message: str, assistant_reply: str, session_id: UUID
 ) -> None:
-    """Fire-and-forget guard: checks if the reply leaked the answer."""
+    """Fire-and-forget guard: checks if the reply leaked the answer.
+
+    Uses `Settings.answer_guard_model` rather than the default chat
+    model so bumping `OPENAI_MODEL` to gpt-5-mini for tutor quality
+    doesn't also bill gpt-5-mini for what is a single-token YES/NO
+    check.
+    """
     try:
+        settings = get_settings()
         llm = get_llm_client()
         probe = [
             MessageInput(role="system", content=_GUARD_PROMPT),
@@ -76,7 +83,9 @@ async def _check_answer_leak(
                 ),
             ),
         ]
-        verdict = await llm.complete(probe, max_tokens=3)
+        verdict = await llm.complete(
+            probe, model=settings.answer_guard_model, max_tokens=3
+        )
         verdict = verdict.strip().upper()
 
         if verdict.startswith("YES"):
@@ -251,9 +260,26 @@ def _build_context(
         )
 
     recent = history[-max_history:]
-    return [
+    # Idempotency: if the last message in history IS the same user
+    # message we're about to add, the new turn is actually a frontend
+    # retry of an already-persisted turn (the wire died after backend
+    # persisted the user message but before the assistant reply
+    # streamed). Don't double-add it -- the LLM would see the same
+    # text twice in its context, once from history and once as the
+    # current turn.
+    history_already_has_user_message = bool(
+        recent
+        and recent[-1].role == "user"
+        and recent[-1].content == user_message
+    )
+    base = [
         *system_messages,
         *[MessageInput(role=m.role, content=m.content) for m in recent],
+    ]
+    if history_already_has_user_message:
+        return base
+    return [
+        *base,
         MessageInput(role="user", content=user_message),
     ]
 
@@ -307,9 +333,21 @@ async def run_tutor_turn(
         # chance to populate session_state.current_topic.
         classify_topic(user_message),
     )
-    await asyncio.to_thread(
-        repo.append_message, session_id, "user", user_message
+    # Idempotent persistence: if the most recent message in this
+    # session is already the same user message, this is a frontend
+    # retry after a connection drop. Don't create a duplicate row.
+    # `_build_context` does the corresponding de-dup on the LLM
+    # input side.
+    last_msg = history[-1] if history else None
+    user_message_already_persisted = (
+        last_msg is not None
+        and last_msg.role == "user"
+        and last_msg.content == user_message
     )
+    if not user_message_already_persisted:
+        await asyncio.to_thread(
+            repo.append_message, session_id, "user", user_message
+        )
 
     if settings.grounding_debug_log:
         p = grounding.problem_reference

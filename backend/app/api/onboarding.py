@@ -22,6 +22,7 @@ authenticated user's rows.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Literal
 from uuid import UUID
 
@@ -33,8 +34,17 @@ from app.agents import grade_priors as priors_mod
 from app.agents import mastery as mastery_mod
 from app.agents.retrieval import find_relevant_problems
 from app.api.deps import CurrentUser
+from app.core.config import get_settings
 from app.db import repositories as repo
-from app.db.schemas import PlacementAttempt, Problem, StudentProgress
+from app.db.schemas import (
+    MessageInput,
+    PlacementAttempt,
+    Problem,
+    StudentProgress,
+)
+from app.llm import get_llm_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
@@ -222,19 +232,126 @@ def _difficulties_for_request(
 
 async def _load_placement_profile(
     user_id: UUID,
-) -> priors_mod.PlacementProfile:
-    """Load the user's profile and return the right `PlacementProfile`.
+) -> tuple[priors_mod.PlacementProfile, str | None]:
+    """Load the user's profile, return (PlacementProfile, band).
 
     Single source of truth for "what corpus subset is this student
     allowed to see in the placement quiz". Called once per
     /placement/start and once per /placement/answer.
+
+    Returns the resolved band string too (e.g. `"9-10"`,
+    `"university"`, or `None` if neither grade_level nor age was
+    parseable). The reranker uses the band string for its prompt.
     """
     profile = await asyncio.to_thread(repo.get_profile, user_id)
     if profile is None:
-        return priors_mod.placement_profile_for_user(None, None)
-    return priors_mod.placement_profile_for_user(
+        return (
+            priors_mod.placement_profile_for_user(None, None),
+            None,
+        )
+    resolved = priors_mod.resolve_grade_band(profile.grade_level)
+    band = resolved[1] if resolved else priors_mod.band_for_age(profile.age)
+    placement_profile = priors_mod.placement_profile_for_user(
         profile.grade_level, profile.age
     )
+    return placement_profile, band
+
+
+# ---------------------------------------------------------------------------
+# Placement candidate reranker
+# ---------------------------------------------------------------------------
+
+
+# How many candidates to fetch from the repo for the reranker to choose
+# from. Bigger = more chances to find a good fit; smaller = cheaper +
+# faster. 12 is a reasonable middle.
+_RERANK_POOL_SIZE = 12
+
+
+async def _rerank_placement_candidates(
+    candidates: list[Problem],
+    *,
+    topic: str,
+    band: str | None,
+) -> Problem | None:
+    """LLM reranker: pick the single best problem for this topic + band.
+
+    Why: semantic search returns problems that are *semantically near*
+    the topic name. For a 10th grader on "rational expressions",
+    candidate #1 might be a wallet/bills problem that mentions
+    "expression" loosely; candidate #5 might be the actual rational-
+    expression problem we want. A small LLM call ranks the pool by
+    fitness for the band + topic.
+
+    Falls back gracefully:
+      * empty candidates -> None
+      * single candidate -> return it (no rerank needed)
+      * reranker disabled in config -> return first (semantic-top)
+      * LLM call fails / unparseable -> return first
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    settings = get_settings()
+    if not settings.placement_reranker_enabled:
+        return candidates[0]
+
+    # Compact each candidate for the prompt. Keep each under ~280 chars
+    # so the whole prompt stays small (~3-5k chars for 12 candidates).
+    summaries: list[str] = []
+    for i, p in enumerate(candidates, start=1):
+        snippet = (p.problem_en or "").strip().replace("\n", " ")[:280]
+        summaries.append(
+            f"{i}. [src={p.source} | "
+            f"diff={p.difficulty or 'n/a'} | "
+            f"type={p.type or 'n/a'}]\n   {snippet}"
+        )
+
+    rubric = (
+        "You are picking ONE math problem from a placement-quiz "
+        "candidate list.\n\n"
+        f"STUDENT BAND: {band or 'unknown'}\n"
+        f"TOPIC SLOT:   {topic}\n\n"
+        "Pick the candidate that best satisfies all three:\n"
+        "  1. Genuinely about the requested TOPIC (not just sharing\n"
+        "     surface words).\n"
+        "  2. Appropriately difficult for the BAND -- challenging but\n"
+        "     solvable, not trivial review and not Olympiad-level.\n"
+        "  3. Clear, unambiguous wording.\n\n"
+        f"Output ONLY the integer (1 to {len(candidates)}) of the best\n"
+        "candidate. No words, no punctuation, no explanation."
+    )
+    user_payload = "CANDIDATES:\n" + "\n".join(summaries)
+
+    try:
+        llm = get_llm_client()
+        response = await llm.complete(
+            [
+                MessageInput(role="system", content=rubric),
+                MessageInput(role="user", content=user_payload),
+            ],
+            model=settings.placement_reranker_model,
+            max_tokens=8,
+        )
+        first_token = (response or "").strip().split()[0:1]
+        if first_token:
+            digits = "".join(c for c in first_token[0] if c.isdigit())
+            if digits:
+                idx = int(digits) - 1
+                if 0 <= idx < len(candidates):
+                    return candidates[idx]
+        logger.debug(
+            "placement reranker: unparseable response %r; using semantic top",
+            response,
+        )
+    except Exception:
+        logger.warning(
+            "placement reranker: LLM call failed; using semantic top",
+            exc_info=True,
+        )
+    return candidates[0]
 
 
 async def _pick_topic_relevant_problem(
@@ -243,6 +360,7 @@ async def _pick_topic_relevant_problem(
     difficulty: str | None,
     exclude_ids: list[UUID],
     placement_profile: priors_mod.PlacementProfile,
+    band: str | None = None,
 ) -> Problem | None:
     """Pick a placement problem that matches the requested topic and the
     student's grade band.
@@ -275,34 +393,54 @@ async def _pick_topic_relevant_problem(
     diffs = _difficulties_for_request(placement_profile, difficulty)
     sources = list(placement_profile.sources)
 
+    # Placement-specific similarity floor. We want problems that are
+    # actually about the requested topic, not loose semantic neighbors.
+    # Lower floor (~0.0) lets gsm8k word problems mentioning vaguely
+    # related words match topic centroids like "rational expressions"
+    # (the wallet/bills problem incident from a 10th grader's
+    # placement quiz). 0.35 is the floor where false matches drop out
+    # while genuine on-topic problems still come through.
     hits = await find_relevant_problems(
         topic,
         "en",
         top_k=30,
-        similarity_threshold=0.0,
+        similarity_threshold=0.35,
     )
     candidate_ids = [h.id for h in hits]
 
     if candidate_ids:
-        chosen = await asyncio.to_thread(
-            repo.fetch_problem_for_placement_by_ids,
+        # Get the top-N pool, then let the LLM reranker pick the best
+        # for this topic + band. Falls through to non-difficulty-filtered
+        # pool if the strict pool is empty.
+        pool = await asyncio.to_thread(
+            repo.fetch_problems_for_placement_by_ids,
             candidate_ids,
             sources=sources,
             exclude_ids=exclude_ids,
             filter_difficulties=diffs,
+            limit=_RERANK_POOL_SIZE,
         )
-        if chosen is not None:
-            return chosen
+        if pool:
+            chosen = await _rerank_placement_candidates(
+                pool, topic=topic, band=band
+            )
+            if chosen is not None:
+                return chosen
         # Mismatched difficulty beats an off-topic problem.
-        chosen = await asyncio.to_thread(
-            repo.fetch_problem_for_placement_by_ids,
+        pool = await asyncio.to_thread(
+            repo.fetch_problems_for_placement_by_ids,
             candidate_ids,
             sources=sources,
             exclude_ids=exclude_ids,
             filter_difficulties=None,
+            limit=_RERANK_POOL_SIZE,
         )
-        if chosen is not None:
-            return chosen
+        if pool:
+            chosen = await _rerank_placement_candidates(
+                pool, topic=topic, band=band
+            )
+            if chosen is not None:
+                return chosen
 
     # Semantic search came back empty (corpus may not be embedded yet, or
     # the topic name doesn't ANN-match anything in the band's sources).
@@ -342,7 +480,7 @@ async def placement_start(user: CurrentUser) -> PlacementStartResponse:
     if len(attempts) >= PLACEMENT_LENGTH:
         return PlacementStartResponse(next=None, completed=True)
 
-    placement_profile = await _load_placement_profile(user.user_id)
+    placement_profile, band = await _load_placement_profile(user.user_id)
     topic = await asyncio.to_thread(
         _topic_for_placement_round, user.user_id, len(attempts)
     )
@@ -358,6 +496,7 @@ async def placement_start(user: CurrentUser) -> PlacementStartResponse:
         difficulty=difficulty,
         exclude_ids=[a.problem_id for a in attempts],
         placement_profile=placement_profile,
+        band=band,
     )
     if problem is None:
         raise HTTPException(
@@ -426,7 +565,7 @@ async def placement_answer(
             summary=summary,
         )
 
-    placement_profile = await _load_placement_profile(user.user_id)
+    placement_profile, band = await _load_placement_profile(user.user_id)
     next_topic = await asyncio.to_thread(
         _topic_for_placement_round, user.user_id, len(attempts)
     )
@@ -442,6 +581,7 @@ async def placement_answer(
         difficulty=next_difficulty,
         exclude_ids=[a.problem_id for a in attempts],
         placement_profile=placement_profile,
+        band=band,
     )
     if next_problem is None:
         # Corpus exhausted -- treat as completed early.

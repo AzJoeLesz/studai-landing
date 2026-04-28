@@ -755,16 +755,48 @@ def fetch_problem_for_placement_by_ids(
     We then enforce the source list + difficulty list + length sanity +
     the excluded-IDs set on top, *while preserving the semantic-search
     rank order*.
+
+    Use `fetch_problems_for_placement_by_ids` (plural) when the caller
+    wants the top-N list to feed into a downstream reranker.
+    """
+    candidates = fetch_problems_for_placement_by_ids(
+        candidate_ids,
+        sources=sources,
+        exclude_ids=exclude_ids,
+        filter_difficulties=filter_difficulties,
+        limit=1,
+    )
+    return candidates[0] if candidates else None
+
+
+def fetch_problems_for_placement_by_ids(
+    candidate_ids: list[UUID],
+    *,
+    sources: list[str] | None = None,
+    exclude_ids: list[UUID],
+    filter_difficulties: list[str] | None = None,
+    limit: int = 15,
+) -> list[Problem]:
+    """List variant of `fetch_problem_for_placement_by_ids`.
+
+    Returns up to `limit` candidate problems that pass all filters,
+    preserving semantic-search rank order. Used by the placement-quiz
+    LLM reranker (`api/onboarding._rerank_placement_candidates`)
+    which then picks the single best for the requested topic + band.
+
+    A length-window outlier is included only as a last-resort fallback
+    so the caller never gets back an empty list when there *is* a
+    candidate (just possibly a too-short or too-long one).
     """
     if not candidate_ids:
-        return None
+        return []
     src_list = list(sources) if sources else list(_PLACEMENT_DEFAULT_SOURCES)
     if not src_list:
-        return None
+        return []
     exclude_str = {str(i) for i in exclude_ids}
     keep = [str(i) for i in candidate_ids if str(i) not in exclude_str]
     if not keep:
-        return None
+        return []
     sb = get_supabase_client()
     q = (
         sb.table("problems")
@@ -778,14 +810,20 @@ def fetch_problem_for_placement_by_ids(
     if filter_difficulties:
         q = q.in_("difficulty", filter_difficulties)
     rows = q.execute().data or []
-    # Preserve the semantic-search ranking order: build a position map
-    # from the input list and sort the survivors by that.
+    # Preserve the semantic-search ranking order.
     rank = {pid: i for i, pid in enumerate(keep)}
     rows.sort(key=lambda r: rank.get(str(r["id"]), 1_000_000))
+    out: list[Problem] = []
     for row in rows:
         body = row.get("problem_en") or ""
         if _PLACEMENT_MIN_LEN <= len(body) <= _PLACEMENT_MAX_LEN:
-            return Problem.model_validate(row)
-    # Nothing in length window -- accept any allowlisted ranked match
-    # rather than send the user to the difficulty-only fallback.
-    return Problem.model_validate(rows[0]) if rows else None
+            out.append(Problem.model_validate(row))
+            if len(out) >= limit:
+                return out
+    if out:
+        return out
+    # Length window excluded everything -- relax it as a last resort
+    # so the caller still has SOMETHING ranked over no result.
+    if rows:
+        return [Problem.model_validate(rows[0])]
+    return []

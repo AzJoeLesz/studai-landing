@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowLeft, MessageSquare } from "lucide-react";
+import { ArrowLeft, MessageSquare, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { StatusMessage } from "@/components/ui/status-message";
@@ -28,9 +28,18 @@ interface ChatViewProps {
  *   2. User sends a message → optimistically render their bubble + an empty
  *      assistant bubble that fills in token-by-token via SSE.
  *   3. On `done`, the assistant message is "sealed" — it's been persisted
- *      server-side too. On `error`, we show a status message and let the
- *      user retry.
+ *      server-side too. On `error`, we surface a Retry button (see below).
  *   4. On `title` (first turn only), the local session title updates.
+ *
+ * Retry-after-connection-drop:
+ *   When the SSE stream errors mid-flight (most commonly because Railway's
+ *   reverse proxy killed an idle TCP connection while gpt-5-mini was
+ *   thinking), we keep the user message visible and show a Retry button.
+ *   On Retry we first re-fetch the session — if the assistant reply landed
+ *   server-side and we just lost it on the wire, we display it without
+ *   triggering another LLM call. Otherwise we re-send the same message.
+ *   The backend (see `agents/tutor.py`) is idempotent on duplicate user
+ *   messages so a retry is safe.
  */
 export function ChatView({ sessionId }: ChatViewProps) {
   const t = useTranslations("chat");
@@ -47,6 +56,11 @@ export function ChatView({ sessionId }: ChatViewProps) {
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  // The text of the most recent user message we tried to send. Held so the
+  // Retry button knows what to re-send. Cleared after a clean turn.
+  const [pendingRetryMessage, setPendingRetryMessage] = useState<string | null>(
+    null,
+  );
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -85,34 +99,42 @@ export function ChatView({ sessionId }: ChatViewProps) {
     el.scrollTop = el.scrollHeight;
   }, [messages, streamingContent]);
 
-  async function handleSend() {
-    const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-
+  /**
+   * Run the streaming exchange for one user message. Used by both the
+   * initial send and by the Retry button. `addOptimisticUserBubble`
+   * controls whether we render the "You: ..." bubble — on retry we
+   * already have it on screen, so we don't add another.
+   */
+  async function startStream(
+    userMessage: string,
+    { addOptimisticUserBubble }: { addOptimisticUserBubble: boolean },
+  ) {
     setStreamError(null);
-    setInput("");
     setIsStreaming(true);
     setStreamingContent("");
+    setPendingRetryMessage(userMessage);
 
-    // Optimistic: render the user's message immediately.
-    const optimisticUserMessage: Message = {
-      id: `optimistic-${Date.now()}`,
-      session_id: sessionId,
-      role: "user",
-      content: trimmed,
-      created_at: new Date().toISOString()
-    };
-    setMessages((prev) => [...prev, optimisticUserMessage]);
+    if (addOptimisticUserBubble) {
+      const optimisticUserMessage: Message = {
+        id: `optimistic-${Date.now()}`,
+        session_id: sessionId,
+        role: "user",
+        content: userMessage,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimisticUserMessage]);
+    }
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     let accumulated = "";
+    let cleanFinish = false;
 
     try {
       await streamChat({
         sessionId,
-        message: trimmed,
+        message: userMessage,
         signal: controller.signal,
         onToken: (token) => {
           accumulated += token;
@@ -125,8 +147,8 @@ export function ChatView({ sessionId }: ChatViewProps) {
           setStreamError(msg);
         },
         onDone: () => {
-          // handled below in the finally block
-        }
+          cleanFinish = true;
+        },
       });
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -142,16 +164,68 @@ export function ChatView({ sessionId }: ChatViewProps) {
           session_id: sessionId,
           role: "assistant",
           content: accumulated,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, assistantMessage]);
       }
       setStreamingContent(null);
       setIsStreaming(false);
       abortRef.current = null;
+      // Only clear the retry handle on a clean done. Mid-stream errors
+      // and aborts both leave it set so the Retry button can use it.
+      if (cleanFinish && !accumulated.trim()) {
+        // Edge case: clean `done` with zero tokens. Let the user retry
+        // because the result is unusable.
+      } else if (cleanFinish) {
+        setPendingRetryMessage(null);
+      }
       // Re-focus the input for fast follow-ups.
       inputRef.current?.focus();
     }
+  }
+
+  async function handleSend() {
+    const trimmed = input.trim();
+    if (!trimmed || isStreaming) return;
+    setInput("");
+    await startStream(trimmed, { addOptimisticUserBubble: true });
+  }
+
+  /**
+   * Retry the last failed user message.
+   *
+   * Step 1: re-fetch the session. If the assistant reply was actually
+   * persisted before the wire died, just refresh the UI — no new LLM call.
+   * Step 2: otherwise, re-send the same message. The backend de-dups
+   * the user-message persistence so this is safe to call repeatedly.
+   */
+  async function handleRetry() {
+    if (!pendingRetryMessage || isStreaming) return;
+    setStreamError(null);
+
+    let messagesAfterReload: Message[] | null = null;
+    try {
+      const data = await getSession(sessionId);
+      messagesAfterReload = data.messages;
+      setMessages(data.messages);
+    } catch {
+      // If reload fails, fall through and try the stream anyway.
+    }
+
+    if (
+      messagesAfterReload &&
+      messagesAfterReload.length > 0 &&
+      messagesAfterReload[messagesAfterReload.length - 1].role === "assistant"
+    ) {
+      // The reply did land server-side; we just lost it on the wire.
+      // Treat as success.
+      setPendingRetryMessage(null);
+      return;
+    }
+
+    await startStream(pendingRetryMessage, {
+      addOptimisticUserBubble: false,
+    });
   }
 
   function handleStop() {
@@ -176,6 +250,13 @@ export function ChatView({ sessionId }: ChatViewProps) {
 
   const title = session?.title?.trim() || tSessions("untitled");
   const hasContent = messages.length > 0 || streamingContent !== null;
+
+  // Show the Retry button when:
+  //   - we have a pending message we tried to send,
+  //   - we're not currently in the middle of streaming,
+  //   - and there's an error to recover from.
+  const canRetry =
+    !!pendingRetryMessage && !isStreaming && !!streamError;
 
   return (
     <div className="flex h-screen flex-col">
@@ -226,7 +307,20 @@ export function ChatView({ sessionId }: ChatViewProps) {
           )}
 
           {streamError && (
-            <StatusMessage type="error">{streamError}</StatusMessage>
+            <div className="flex flex-col items-start gap-2">
+              <StatusMessage type="error">{streamError}</StatusMessage>
+              {canRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRetry}
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {t("retry")}
+                </Button>
+              )}
+            </div>
           )}
         </div>
       </div>

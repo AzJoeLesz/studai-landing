@@ -61,6 +61,7 @@
     "send": "Send",
     "sending": "Sending...",
     "stop": "Stop",
+    "retry": "Retry",
     "streamError": "Error while receiving the reply.",
     "emptyTitle": "Let's talk",
     "emptyDescription": "Ask anything about math — algebra, geometry, functions, anything.",

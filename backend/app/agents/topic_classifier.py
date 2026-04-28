@@ -20,9 +20,12 @@ hydrate at startup.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 from app.agents.grade_priors import topic_universe
 from app.core.config import get_settings
@@ -83,8 +86,45 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
+_DESCRIPTIONS_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "topic_descriptions.json"
+)
+
+
+@lru_cache(maxsize=1)
+def _topic_descriptions() -> dict[str, str]:
+    """Load the (canonical_topic -> embedding source text) map.
+
+    Topics not in the file fall back to embedding the bare canonical
+    name. The file may also include a `_meta` entry for documentation
+    purposes -- ignored here.
+    """
+    try:
+        raw = json.loads(_DESCRIPTIONS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning(
+            "topic_classifier: failed to load topic_descriptions.json",
+            exc_info=True,
+        )
+        return {}
+    return {
+        k: v
+        for k, v in raw.items()
+        if not k.startswith("_") and isinstance(v, str)
+    }
+
+
 async def _ensure_centroids() -> dict[str, list[float]]:
-    """Load (and cache) the embedding for every canonical topic label."""
+    """Load (and cache) the embedding for every canonical topic label.
+
+    Centroid source text is the topic's entry in
+    `data/topic_descriptions.json` if present, otherwise the bare
+    topic label. Descriptions give the centroid more semantic surface
+    area to match against -- a long student message about chocolate
+    bars matches the embedding of "division — splitting things into
+    equal groups, sharing equally..." much better than the embedding
+    of just "division".
+    """
     global _centroid_cache
     if _centroid_cache is not None:
         return _centroid_cache
@@ -96,11 +136,11 @@ async def _ensure_centroids() -> dict[str, list[float]]:
             logger.warning("topic_classifier: empty topic universe")
             _centroid_cache = {}
             return _centroid_cache
+        descriptions = _topic_descriptions()
+        embedding_sources = [descriptions.get(t, t) for t in topics]
         embeddings = get_embeddings_client()
-        # We embed the bare topic label. Adding a prefix like "math
-        # topic:" hurt similarity on tests with shorter labels.
         try:
-            vecs = await embeddings.embed_batch(topics)
+            vecs = await embeddings.embed_batch(embedding_sources)
         except Exception:
             logger.warning(
                 "topic_classifier: failed to compute centroids; "
@@ -109,7 +149,17 @@ async def _ensure_centroids() -> dict[str, list[float]]:
             )
             _centroid_cache = {}
             return _centroid_cache
+        # Cache key is the canonical topic name (what we return), not
+        # the description text (which is what we embedded).
         _centroid_cache = dict(zip(topics, vecs))
+        with_desc = sum(1 for t in topics if t in descriptions)
+        logger.info(
+            "topic_classifier: built %d centroids (%d with enriched "
+            "descriptions, %d falling back to bare names)",
+            len(topics),
+            with_desc,
+            len(topics) - with_desc,
+        )
         return _centroid_cache
 
 

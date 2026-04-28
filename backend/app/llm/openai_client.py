@@ -73,6 +73,18 @@ def _reasoning_kwargs(model: str) -> dict:
     return {}
 
 
+# OpenAI's Python SDK ships with NO read timeout by default. For chat
+# this means a single stuck completion wedges the whole pipeline
+# indefinitely. Set 120s -- generous enough for gpt-5-mini's reasoning
+# pause + a few seconds of streaming, strict enough that a truly hung
+# request fails fast instead of holding the SSE connection open until
+# the user gives up. (Streaming bodies are NOT subject to the read
+# timeout once the response headers arrive, so legit long generations
+# aren't cut off.)
+_LLM_TIMEOUT_SECONDS = 120.0
+_LLM_MAX_RETRIES = 3
+
+
 class OpenAIClient(LLMClient):
     def __init__(
         self,
@@ -80,7 +92,11 @@ class OpenAIClient(LLMClient):
         default_model: str | None = None,
     ) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=api_key or settings.openai_api_key)
+        self._client = AsyncOpenAI(
+            api_key=api_key or settings.openai_api_key,
+            timeout=_LLM_TIMEOUT_SECONDS,
+            max_retries=_LLM_MAX_RETRIES,
+        )
         self._default_model = default_model or settings.openai_model
 
     @staticmethod

@@ -201,7 +201,78 @@ Iteration #5's prompt strengthening *helped* (turn 1 of "I'd like to talk about 
 
 **Open follow-ups (deferred):**
 - The post-turn extractor stores `session_state.current_topic` lowercased but NOT alias-folded. Reads through `canonicalize_topic` so it works either way, but writes would be cleaner if folded too.
-- `gpt-4o-mini` is the chat model. For demo polish, bumping to `gpt-4o` (env: `OPENAI_MODEL=gpt-4o`) gives noticeably tighter rule-following at ~10× per-token cost. Worth trying for investor pitches; not for production until cost matters less.
+- `gpt-4o-mini` is the chat model. Iteration #7 below lets you swap to gpt-5 family.
+
+### Onboarding iteration #7 (GPT-5 / o-series model support)
+
+Bumping `OPENAI_MODEL` to `gpt-5-mini` raised two new errors not seen with gpt-4o-mini:
+
+| Issue | Fix |
+|-------|-----|
+| `BadRequestError: Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.` | New `_token_limit_kwargs(model, max_tokens) -> dict` helper in `llm/openai_client.py`. Routes by model prefix: `gpt-5*`, `gpt-4.1*`, `o1*`, `o3*`, `o4*` get `max_completion_tokens`; older families keep `max_tokens`. Both `stream_chat` and `complete` use it. |
+| **Empty replies on the second turn.** GPT-5 family does internal reasoning that bills against the output budget; with `max_completion_tokens=1000`, complex turns burned the whole budget on reasoning and emitted zero visible tokens. The chat looked dead. | New `_reasoning_kwargs(model)` adds `reasoning_effort` for `gpt-5*` and `o*` models (not `gpt-4.1*` — it doesn't support reasoning effort). Default `"minimal"` to keep tokens free for visible output. Bumped `tutor_max_response_tokens` default `1000 → 2000`. Added `tutor_reasoning_effort` config knob. Added an `else` branch in `tutor.run_tutor_turn` that logs `tutor: empty assistant reply | model=… | max_tokens=… | reasoning_effort=…` so future silent failures show up in Railway logs. |
+
+**Files:** `llm/openai_client.py`, `core/config.py`, `agents/tutor.py`.
+
+**Env knobs added:**
+- `OPENAI_MODEL` — bump to `gpt-5-mini` for production polish, `gpt-5` for demo.
+- `TUTOR_REASONING_EFFORT` — default `"minimal"`. Bump to `low`/`medium`/`high` if quality demands it.
+- `TUTOR_MAX_RESPONSE_TOKENS` — default `2000`. Increase if you see the empty-reply warning.
+
+### Onboarding iteration #8 (topic-classifier confidence floor)
+
+A 4th grader's chocolate-bar division word problem ("Peter bought chocolate, has 350g of crumbs, each bar is 80g, max bars?") was getting routed to `above_level_exploration` and refused. Debug log showed why:
+
+```
+live_topic=probability basics  sim=0.33   register=above_level_exploration
+```
+
+The classifier had no good match for the long story-heavy word problem, picked "probability basics" at sim 0.33 (just above the 0.30 floor — because of the *uncertainty/forgetting* framing in the story), and "probability basics" lives in 6-8 priors so for a 4th grader → `above_level`.
+
+**Fix:** confidence floor `0.30 → 0.40`. Below 0.40, classifier returns None and register defaults to `at_level`. Genuine on-topic queries ("tell me about parabolas") still score 0.45+ and go through. Added `topic_classifier_confidence_floor` config knob.
+
+**Files:** `agents/topic_classifier.py`, `core/config.py`.
+
+### Onboarding iteration #9 (concrete-everyday vocabulary enforcement)
+
+Chocolate-bar problem now classified correctly (at_level, division), but on `gpt-5-mini` the tutor still wrote: *"If he bought $n$ whole bars originally, then... the largest whole number $n$ such that $n$ bars would weigh at most..."*. Two violations of the directives:
+
+1. **`vocabulary_level: concrete-everyday`** — used letter variable `n` and abstract algebraic framing. v3's definition said "avoid jargon" but never explicitly banned variables.
+2. **`ONE MOVE PER REPLY`** — wrote ~6 sentences of monologue setup before asking the actual question. The "one move" rule was being read as "one Socratic question is fine, even after a paragraph of reasoning".
+
+**Fixes in `prompts/tutor_v3.txt`:**
+- `concrete-everyday` definition rewritten with explicit "NO letter variables", "NO algebraic framing", + good/bad worked example for the chocolate-bar case.
+- `step_size: micro` adds "DO NOT lay out a chain of reasoning before asking. Three sentences max."
+- `ONE MOVE PER REPLY` gets explicit ANTI-PATTERN section with two BAD reply examples (using `n`) and two GOOD versions of the same. Bans "Let's think step by step", "Let me reason through this", "Let's break this down" as opening phrases.
+- Two new entries in `WHAT YOU MUST NEVER DO`: opening monologue phrases, and `concrete-everyday`-specific bans (no variables, no `let n be`, 3 sentences max).
+
+**Fix in `agents/style_policy.py`:**
+- New `_VOCAB_RECIPES` dict, parallel to `_INLINE_RECIPES` for register. When `vocabulary_level == 'concrete-everyday'`, `format_directives_block` appends an inline recipe (no variables, no algebraic framing, 2-3 sentences max) at the end of the directives block — the LAST system message before the user query.
+
+### Onboarding iteration #10 (PHASE 1 / PHASE 2 — diagnostic-first tutoring)
+
+Iteration #9 fixed the variable-leak, but the next reply was: *"Nice problem, Juli! We want to know how many whole 80-gram bars can fit into 350 grams of crumbs. What do you get if you divide 350 by 80?"* — pedagogically still wrong. The model named the operation, named the numbers, and left the student with arithmetic-only. That's spoon-feeding, not Socratic tutoring.
+
+Real tutoring has two phases: first **diagnose** what the student already understands, then **guide** based on that. The current MODE A skipped phase 1.
+
+**Fix in `prompts/tutor_v3.txt`:**
+- MODE A restructured into PHASE 1 (DIAGNOSTIC) and PHASE 2 (GUIDED).
+  - **PHASE 1** = first reply on a NEW problem. Open question only ("How would you start?", "What do you think we need to figure out?", "What do we already know about [domain]?"). DO NOT name the operation, mention specific numbers, or hint at the method.
+  - **PHASE 2** = subsequent replies. Three example phrasings (open / medium / closed). Default to open/medium; closed is a last resort after the student gets stuck.
+- "WHAT YOU MUST NEVER DO" gains: "Skip PHASE 1 — DIAGNOSTIC on a new problem", "name the operation FOR the student as your first move".
+
+**Fix in `agents/style_policy.py`:**
+- `_VOCAB_RECIPES['concrete-everyday']` now also instructs PHASE 1 behavior on first replies: open diagnostic question + warm acknowledgement + no operation/numbers/method hint.
+
+### State of the v3 prompt as of iteration #10
+
+| Metric | Value |
+|--------|-------|
+| `tutor_v3.txt` size | ~19k chars |
+| Inline recipes injected (worst case: above-level + concrete-everyday) | ~2.5k extra chars in directives block |
+| Total system-message stack for a typical 4th-grader at-level chat | ~22-25k chars |
+| Where the directives block lives in the system stack | LAST (immediately before history → user message) |
+| RAG layers (problem bank + OpenStax + annotations) | ON for at_level / remedial; OFF for above/below-level |
 
 **Resolver behavior** (confirmed in a throwaway script before deletion):
 

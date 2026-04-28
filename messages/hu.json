@@ -61,6 +61,7 @@
     "send": "Küldés",
     "sending": "Küldés...",
     "stop": "Megszakítás",
+    "retry": "Újra",
     "streamError": "Hiba a válasz fogadása közben.",
     "emptyTitle": "Beszélgessünk",
     "emptyDescription": "Kérdezz bármit a matekról — algebra, geometria, függvények, bármi.",

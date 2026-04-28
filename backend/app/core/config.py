@@ -82,6 +82,37 @@ class Settings(BaseSettings):
             "Single-token YES/NO output; cheap is fine."
         ),
     )
+    placement_reranker_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run an LLM reranker over the top-N semantic-search "
+            "candidates for each placement question, instead of just "
+            "taking the first hit that passes filters. Costs one "
+            "small LLM call per question (~$0.0005 on gpt-4o-mini). "
+            "Worth it when the corpus has many topic-adjacent matches "
+            "(see iteration #11 in docs/phase9_personalization.md)."
+        ),
+    )
+    placement_reranker_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Model used by the placement-quiz candidate reranker. "
+            "~500-token input, single-integer output. gpt-4o-mini "
+            "is plenty for ranking 5-15 candidates."
+        ),
+    )
+    answer_guard_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Model used by the post-reply answer-leak guard "
+            "(`tutor._check_answer_leak`). Single-token YES/NO output, "
+            "fires once per assistant turn. Kept on a cheap model "
+            "independently of `OPENAI_MODEL` so bumping the chat to "
+            "gpt-5 / gpt-5-mini doesn't accidentally also bill 10x for "
+            "the leak guard. Bump only if you start seeing missed "
+            "leaks in Railway logs."
+        ),
+    )
 
     # --- Tutor behavior -----------------------------------------------------
     tutor_max_history_messages: int = Field(
