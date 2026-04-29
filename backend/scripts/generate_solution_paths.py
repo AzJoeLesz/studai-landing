@@ -54,8 +54,8 @@ import json
 import logging
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 from openai import AsyncOpenAI
@@ -473,19 +473,45 @@ def _persist_graph(
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-async def _process_one(
+@dataclass(frozen=True)
+class PathGenOptions:
+    """Explicit options for `process_problem`.
+
+    Both the CLI in this script and the band-corpus orchestrator
+    (`scripts/generate_band_corpus.py`) construct one of these and
+    hand it to `process_problem`. Keeping it as a dataclass instead
+    of an `argparse.Namespace` lets callers without an arg parser
+    (the orchestrator) use the same code path cleanly.
+    """
+
+    language: Language = "en"
+    overwrite: bool = False
+    no_critic: bool = False
+    dry_run: bool = False
+    use_existing_annotation: bool = False
+    # What to write into `solution_paths.source` for these rows.
+    # "generator", "annotation_backfill", or "band_orchestrator".
+    persistence_source: str = "generator"
+
+
+async def process_problem(
     *,
     client: AsyncOpenAI,
     emb: OpenAIEmbeddingsClient,
     system_prompt: str,
     problem: Problem,
-    settings: Any,
-    args: argparse.Namespace,
+    options: PathGenOptions,
+    path_gen_model: str,
+    path_critic_model: str,
 ) -> bool:
-    """Generate + critique + persist one problem. Returns True on success."""
+    """Generate + critique + persist one problem. Returns True on success.
+
+    Public-facing version of the previous `_process_one` -- explicit
+    kwargs instead of an argparse.Namespace so the band orchestrator
+    can call it without faking a CLI invocation.
+    """
     existing_annotation: dict | None = None
-    if args.from_annotations:
-        # The annotation is the input scaffolding for the generator.
+    if options.use_existing_annotation:
         annos = await asyncio.to_thread(
             repo.get_annotations_for_problem_ids, [problem.id]
         )
@@ -498,26 +524,23 @@ async def _process_one(
         problem=problem,
         existing_annotation=existing_annotation,
     )
-    graph = await _generate(
-        client, settings.path_gen_model, system_prompt, user_msg
-    )
+    graph = await _generate(client, path_gen_model, system_prompt, user_msg)
     if not graph or not graph.paths:
         print(f"  FAIL gen problem_id={problem.id}", flush=True)
         return False
 
     critic_score: float | None = None
-    if not args.no_critic:
+    if not options.no_critic:
         critic_score = await _critique(
-            client, settings.path_critic_model, problem, graph
+            client, path_critic_model, problem, graph
         )
 
-    if args.dry_run:
+    if options.dry_run:
         print(
             f"  DRY ok problem_id={problem.id} paths={len(graph.paths)} "
             f"critic={critic_score if critic_score is not None else 'n/a'}",
             flush=True,
         )
-        # Show a tiny preview so dry-runs are useful for prompt iteration.
         preview = graph.model_dump_json(indent=0)[:1500]
         print(preview, flush=True)
         return True
@@ -526,11 +549,11 @@ async def _process_one(
         _persist_graph,
         problem_id=problem.id,
         graph=graph,
-        language=args.language,
-        model=settings.path_gen_model,
+        language=options.language,
+        model=path_gen_model,
         critic_score=critic_score,
-        source="annotation_backfill" if args.from_annotations else "generator",
-        overwrite=args.overwrite,
+        source=options.persistence_source,
+        overwrite=options.overwrite,
     )
     print(
         f"  ok problem_id={problem.id} paths={written} "
@@ -538,6 +561,11 @@ async def _process_one(
         flush=True,
     )
     return True
+
+
+def load_system_prompt() -> str:
+    """Public alias for `_load_prompt` (the band orchestrator imports this)."""
+    return _load_prompt()
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -551,6 +579,35 @@ async def run(args: argparse.Namespace) -> int:
     if cap is not None and cap < 0:
         cap = None
 
+    options = PathGenOptions(
+        language=args.language,
+        overwrite=args.overwrite,
+        no_critic=args.no_critic,
+        dry_run=args.dry_run,
+        use_existing_annotation=args.from_annotations,
+        persistence_source=(
+            "annotation_backfill" if args.from_annotations else "generator"
+        ),
+    )
+
+    # Pre-parse the comma-separated source/difficulty/type filters once.
+    sources_filter = _split_csv(args.source)
+    diffs_filter = _split_csv(args.difficulty)
+    types_filter = _split_csv(args.type)
+    has_filters = bool(sources_filter or diffs_filter or types_filter)
+
+    async def one(p: Problem) -> bool:
+        async with sem:
+            return await process_problem(
+                client=oa,
+                emb=emb,
+                system_prompt=system_prompt,
+                problem=p,
+                options=options,
+                path_gen_model=settings.path_gen_model,
+                path_critic_model=settings.path_critic_model,
+            )
+
     # Resolve which problems to work on.
     targets: list[Problem] = []
     if args.problem_id:
@@ -561,60 +618,64 @@ async def run(args: argparse.Namespace) -> int:
             print(f"problem not found: {args.problem_id}", flush=True)
             return 1
         targets = [problem]
-    else:
-        done = 0
-        while cap is None or done < cap:
-            need = 100 if cap is None else min(100, cap - done)
-            if need < 1:
-                break
-            if args.from_annotations:
-                batch = await asyncio.to_thread(
-                    repo.list_annotated_problems_without_solution_paths,
-                    args.language,
-                    need,
-                )
-            else:
-                batch = await asyncio.to_thread(
-                    repo.list_problems_without_solution_paths,
-                    args.language,
-                    need,
-                )
-            if not batch:
-                break
-
-            async def one(p: Problem) -> bool:
-                async with sem:
-                    return await _process_one(
-                        client=oa,
-                        emb=emb,
-                        system_prompt=system_prompt,
-                        problem=p,
-                        settings=settings,
-                        args=args,
-                    )
-
-            results = await asyncio.gather(*[one(p) for p in batch])
-            done += sum(1 for ok in results if ok)
-            if cap is not None and done >= cap:
-                break
-            if len(batch) < need:
-                break
+        await asyncio.gather(*[one(p) for p in targets])
         return 0
 
-    # Single-problem path.
-    async def one(p: Problem) -> bool:
-        async with sem:
-            return await _process_one(
-                client=oa,
-                emb=emb,
-                system_prompt=system_prompt,
-                problem=p,
-                settings=settings,
-                args=args,
+    # Batch loop. Three modes:
+    #   --from-annotations  -> annotated problems without paths
+    #   --source/--difficulty/--type  -> filtered slice from the corpus
+    #                                     (also excludes problems that
+    #                                     already have paths in this language)
+    #   default              -> any problem without a path, newest first
+    done = 0
+    while cap is None or done < cap:
+        need = 100 if cap is None else min(100, cap - done)
+        if need < 1:
+            break
+        if args.from_annotations:
+            batch = await asyncio.to_thread(
+                repo.list_annotated_problems_without_solution_paths,
+                args.language,
+                need,
             )
+        elif has_filters:
+            # Pull a wider window than `need` because the
+            # only-without-paths post-filter may shrink it.
+            batch = await asyncio.to_thread(
+                repo.list_problems_filtered,
+                sources=sources_filter or None,
+                difficulties=diffs_filter or None,
+                types=types_filter or None,
+                only_without_paths_in_language=args.language,
+                limit=need * 4,
+            )
+            batch = batch[:need]
+        else:
+            batch = await asyncio.to_thread(
+                repo.list_problems_without_solution_paths,
+                args.language,
+                need,
+            )
+        if not batch:
+            break
 
-    await asyncio.gather(*[one(p) for p in targets])
+        results = await asyncio.gather(*[one(p) for p in batch])
+        done += sum(1 for ok in results if ok)
+        if cap is not None and done >= cap:
+            break
+        if len(batch) < need:
+            break
     return 0
+
+
+def _split_csv(raw: str | None) -> list[str]:
+    """Parse `--source "Level 1,Level 2"` into ['Level 1', 'Level 2'].
+
+    Trims whitespace; filters out empties. None / empty -> [].
+    """
+    if not raw:
+        return []
+    return [tok.strip() for tok in raw.split(",") if tok.strip()]
 
 
 def main() -> int:
@@ -642,6 +703,36 @@ def main() -> int:
         "--problem-id",
         default=None,
         help="Generate for a single problem (uuid). Bypasses --limit.",
+    )
+    ap.add_argument(
+        "--source",
+        default=None,
+        help=(
+            "Comma-separated source allowlist (e.g. "
+            "'hendrycks,gsm8k' or 'mathqa'). When set, picks "
+            "problems matching ANY source. Combines with "
+            "--difficulty / --type."
+        ),
+    )
+    ap.add_argument(
+        "--difficulty",
+        default=None,
+        help=(
+            "Comma-separated difficulty allowlist (e.g. "
+            "'Level 1,Level 2' or 'easy'). Note these are CORPUS "
+            "strings (not the 'easy/medium/hard' logical buckets); "
+            "see `agents.mastery.corpus_difficulties_for` for the "
+            "corpus-string mapping if you need it."
+        ),
+    )
+    ap.add_argument(
+        "--type",
+        default=None,
+        help=(
+            "Comma-separated `problems.type` allowlist (e.g. "
+            "'Algebra,Geometry' for Hendrycks; 'General,Physics' "
+            "for MathQA)."
+        ),
     )
     ap.add_argument(
         "--language",

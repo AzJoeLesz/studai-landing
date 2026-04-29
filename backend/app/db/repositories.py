@@ -908,6 +908,138 @@ def list_annotated_problems_without_solution_paths(
     return [Problem.model_validate(row) for row in (res.data or [])]
 
 
+def list_problems_filtered(
+    *,
+    sources: list[str] | None = None,
+    difficulties: list[str] | None = None,
+    types: list[str] | None = None,
+    exclude_ids: list[UUID] | None = None,
+    only_without_paths_in_language: Language | None = None,
+    limit: int = 200,
+) -> list[Problem]:
+    """General problem-bank filter. Used by the band-corpus orchestrator
+    (Phase 10E) when topic-search ANN doesn't have a centroid for a
+    topic, or when a caller just wants `(source, difficulty, type)` slices.
+
+    Differs from `fetch_problem_for_placement(...)` (which is
+    placement-quiz-flavored: defaults to a placement-source allowlist
+    + length window + 40-row cap). This function applies NO defaults
+    -- pass `sources=None` for "any source", `difficulties=None` for
+    "any difficulty", etc. Pass `only_without_paths_in_language='en'`
+    to skip problems that already have a solution_paths row in that
+    language (idempotent re-runs of the orchestrator).
+    """
+    sb = get_supabase_client()
+    q = sb.table("problems").select(
+        "id,source,type,difficulty,problem_en,solution_en,answer,"
+        "source_id,created_at"
+    )
+    if sources:
+        q = q.in_("source", list(sources))
+    if difficulties:
+        q = q.in_("difficulty", list(difficulties))
+    if types:
+        q = q.in_("type", list(types))
+    if exclude_ids:
+        q = q.not_.in_("id", [str(i) for i in exclude_ids])
+    safe_limit = max(1, min(2000, limit))
+    res = q.limit(safe_limit).execute()
+    rows = res.data or []
+    if not rows:
+        return []
+    out = [Problem.model_validate(r) for r in rows]
+    if only_without_paths_in_language:
+        # Filter out anything that already has a path in this language.
+        # One IN-query is cheaper than per-row RTTs.
+        ids = [str(p.id) for p in out]
+        existing = (
+            sb.table("solution_paths")
+            .select("problem_id")
+            .in_("problem_id", ids)
+            .eq("language", only_without_paths_in_language)
+            .execute()
+        )
+        already = {row["problem_id"] for row in (existing.data or [])}
+        out = [p for p in out if str(p.id) not in already]
+    return out
+
+
+def problem_ids_with_paths(
+    problem_ids: list[UUID] | list[str],
+    *,
+    language: Language = "en",
+) -> set[str]:
+    """Subset of `problem_ids` that already have a `solution_paths` row
+    in `language`. Used by the band-corpus orchestrator to skip
+    already-generated problems on re-runs (idempotent).
+    """
+    if not problem_ids:
+        return set()
+    ids = [str(i) for i in problem_ids]
+    sb = get_supabase_client()
+    res = (
+        sb.table("solution_paths")
+        .select("problem_id")
+        .in_("problem_id", ids)
+        .eq("language", language)
+        .execute()
+    )
+    return {row["problem_id"] for row in (res.data or [])}
+
+
+def fetch_problems_by_ids(
+    candidate_ids: list[UUID],
+    *,
+    sources: list[str] | None = None,
+    difficulties: list[str] | None = None,
+    types: list[str] | None = None,
+    exclude_ids: list[UUID] | None = None,
+    limit: int = 50,
+    preserve_rank: bool = True,
+) -> list[Problem]:
+    """Filter a ranked list of problem ids by source/difficulty/type.
+
+    Used by the band-corpus orchestrator when it has a semantic-search
+    ranking from `repo.search_problems(topic_embedding, ...)` and wants
+    to keep the rank order while applying corpus filters. Mirrors
+    `fetch_problems_for_placement_by_ids` but without placement
+    defaults (no source allowlist, no length window).
+    """
+    if not candidate_ids:
+        return []
+    exclude_str = {str(i) for i in (exclude_ids or [])}
+    keep = [str(i) for i in candidate_ids if str(i) not in exclude_str]
+    if not keep:
+        return []
+    sb = get_supabase_client()
+    q = (
+        sb.table("problems")
+        .select(
+            "id,source,type,difficulty,problem_en,solution_en,answer,"
+            "source_id,created_at"
+        )
+        .in_("id", keep)
+    )
+    if sources:
+        q = q.in_("source", list(sources))
+    if difficulties:
+        q = q.in_("difficulty", list(difficulties))
+    if types:
+        q = q.in_("type", list(types))
+    rows = q.execute().data or []
+    if not rows:
+        return []
+    if preserve_rank:
+        rank = {pid: i for i, pid in enumerate(keep)}
+        rows.sort(key=lambda r: rank.get(str(r["id"]), 1_000_000))
+    out: list[Problem] = []
+    for row in rows:
+        out.append(Problem.model_validate(row))
+        if len(out) >= limit:
+            break
+    return out
+
+
 # --- Solution paths --------------------------------------------------------
 def insert_solution_path(row: SolutionPathInsert) -> SolutionPath:
     """Upsert a single solution path; conflicts on (problem_id, name, language).

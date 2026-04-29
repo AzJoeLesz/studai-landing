@@ -328,6 +328,52 @@ _BANDS_ORDER: tuple[str, ...] = (
 )
 
 
+def all_band_names() -> tuple[str, ...]:
+    """The canonical band list, lowest to highest."""
+    return _BANDS_ORDER
+
+
+def topics_for_band(curriculum: str, band: str) -> list[str]:
+    """All canonical topics that belong to (curriculum, band).
+
+    Sorted, deduped, English-canonicalized. Used by:
+      * the path-generation orchestrator (10E) to drive topic-balanced
+        runs per band (e.g. "give me ~10 verified paths per topic for
+        9-10 across the 16 topics in that band");
+      * `style_policy._is_stretch_eligible` to count how many
+        at-level topics the student has earned mastery on.
+    """
+    return sorted(priors_for(curriculum, band).keys())
+
+
+def topic_is_one_band_above(
+    topic: str | None,
+    curriculum: str | None,
+    band: str | None,
+) -> bool:
+    """True iff `topic` lives in the band IMMEDIATELY above `band` and
+    not in `band` itself.
+
+    Used by `style_policy._register_for` (Phase 10 refinement): a
+    student asking about a topic just one band above their grade
+    isn't necessarily "way over their head" — if their mastery on
+    band-level topics is strong, we let the conversation proceed
+    `at_level`. Bigger gaps (band+2 or more) keep the
+    `above_level_exploration` safeguard so a 3rd grader still doesn't
+    get walked through a quadratic formula.
+    """
+    canon = canonicalize_topic(topic)
+    if not (canon and curriculum and band) or band not in _BANDS_ORDER:
+        return False
+    idx = _BANDS_ORDER.index(band)
+    next_idx = idx + 1
+    if next_idx >= len(_BANDS_ORDER):
+        return False  # Already at university; nothing higher.
+    if canon in priors_for(curriculum, band):
+        return False  # The topic is at level, not one band up.
+    return canon in priors_for(curriculum, _BANDS_ORDER[next_idx])
+
+
 def topic_band_status(
     topic: str | None,
     curriculum: str | None,

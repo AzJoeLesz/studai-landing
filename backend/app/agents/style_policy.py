@@ -25,6 +25,8 @@ from app.agents.grade_priors import (
     canonicalize_topic,
     resolve_grade_band,
     topic_band_status,
+    topic_is_one_band_above,
+    topics_for_band,
 )
 from app.db.schemas import Profile, SessionState, StudentProgress
 
@@ -144,11 +146,59 @@ def _example_flavor_from_pref(pref: str | None) -> ExampleFlavor | None:
 
 
 # ---------------------------------------------------------------------------
-# Register: topic-grade alignment
+# Register: topic-grade alignment + mastery-aware refinement
 # ---------------------------------------------------------------------------
 # Empirically-tuned threshold; revisit once we have enough placement-quiz
-# data to ground it.
+# and step_check data to ground it.
 _REMEDIAL_MASTERY_THRESHOLD = 0.20  # mastery this low on a band-appropriate topic
+# Phase 10 stretch eligibility: kid must show EARNED mastery (not just
+# grade priors) >= this on at least N at-level topics to be allowed to
+# stretch one band up. The "earned" qualifier matters because grade
+# priors are seeded uniformly by `seedGradePriors`; we don't want
+# every fresh signup to count as "advanced".
+_STRETCH_MASTERY_THRESHOLD = 0.70
+_STRETCH_MIN_AT_LEVEL_TOPICS = 3
+
+
+def _is_stretch_eligible(
+    top_progress: list[StudentProgress] | None,
+    *,
+    curriculum: str | None,
+    band: str | None,
+) -> bool:
+    """True iff this student is strong enough to stretch ONE band up.
+
+    Heuristic: they have mastery >= 0.70 on at least 3 topics that
+    appear in their declared band's topic list, AND the evidence for
+    those came from real outcomes (placement / extractor / rating /
+    step_check) -- not from grade-prior seeding.
+
+    Why exclude `evidence_source='prior'`: every fresh signup gets
+    grade priors written at the band's expected mastery values
+    (often 0.7+ on core topics like 'addition' for a 6th grader).
+    Counting those as "earned" would let any signup qualify and the
+    safeguard would silently disappear.
+    """
+    if not (top_progress and curriculum and band):
+        return False
+    band_topics = topics_for_band(curriculum, band)
+    if not band_topics:
+        return False
+    band_topic_set: set[str] = set()
+    for t in band_topics:
+        canon = canonicalize_topic(t)
+        if canon:
+            band_topic_set.add(canon)
+    earned_high = 0
+    for p in top_progress:
+        canon = canonicalize_topic(p.topic) or p.topic
+        if canon not in band_topic_set:
+            continue
+        if p.evidence_source == "prior":
+            continue
+        if p.mastery_score >= _STRETCH_MASTERY_THRESHOLD:
+            earned_high += 1
+    return earned_high >= _STRETCH_MIN_AT_LEVEL_TOPICS
 
 
 def _register_for(
@@ -157,16 +207,33 @@ def _register_for(
     curriculum: str | None,
     band: str | None,
     progress_for_topic: StudentProgress | None,
+    top_progress: list[StudentProgress] | None = None,
 ) -> Register:
     """Decide the conversational register from topic vs grade vs mastery.
 
-    Uses `topic_band_status` to distinguish "above level" (topic
-    appears only in higher bands) from "below level" (topic appears
-    only in lower bands). The previous implementation used a prior
-    threshold which conflated the two -- a 12th grader asking "what
-    is 7 + 8?" was wrongly classified as `above_level_exploration`
-    because addition isn't in the 11-12 priors. Now it correctly
-    becomes `below_level_warmup`.
+    Phase 9 baseline: uses `topic_band_status` to distinguish
+    above-level (topic only in higher bands) from below-level (topic
+    only in lower bands). At-level + low mastery becomes `remedial`.
+
+    Phase 10 refinements (founder-approved):
+      * **Below-level + LOW mastery -> `remedial`**, not
+        `below_level_warmup`. The previous behavior treated every
+        below-level question as a casual review ("be brief, don't
+        dwell"). But a 10th grader who keeps getting basic division
+        wrong has a real GAP, not boredom -- they need the patient
+        gap-fill `remedial` register, not a polite brush-off.
+      * **Above-level by EXACTLY ONE BAND + EARNED mastery on
+        at-level topics -> `at_level`** (allowed, not blocked). A
+        9th grader with strong algebra mastery asking about
+        precalc gets the normal tutoring experience; a 4th grader
+        asking about quadratics still gets `above_level_exploration`.
+        This implements the founder's intuition: "if it's not super
+        above them, just a year or two, AND they have a confident
+        score, they can work in that field with the AI."
+
+    Notably we do NOT add an active "want to try harder material?"
+    redirect -- the silent `at_level` outcome respects the student's
+    autonomy and avoids the passive-aggressive read.
     """
     if not current_topic:
         return "at_level"
@@ -174,12 +241,28 @@ def _register_for(
     if not canon:
         return "at_level"
     status = topic_band_status(canon, curriculum, band)
+
     if status == "above_level":
+        # Phase 10 nuance: one-band-above stretch when prereqs are strong.
+        if topic_is_one_band_above(
+            canon, curriculum, band
+        ) and _is_stretch_eligible(
+            top_progress, curriculum=curriculum, band=band
+        ):
+            return "at_level"
         return "above_level_exploration"
+
     if status == "below_level":
+        # Phase 10 nuance: low mastery on a below-level topic is a real
+        # gap, not a casual refresher. Patient gap-fill > polite brush-off.
+        if (
+            progress_for_topic is not None
+            and progress_for_topic.mastery_score < _REMEDIAL_MASTERY_THRESHOLD
+        ):
+            return "remedial"
         return "below_level_warmup"
-    # at_level (or unknown) -- maybe remedial if mastery on this topic
-    # is unusually low for someone at this band.
+
+    # status == "at_level" or "unknown"
     if (
         progress_for_topic is not None
         and progress_for_topic.mastery_score < _REMEDIAL_MASTERY_THRESHOLD
@@ -308,6 +391,7 @@ def derive_directives(
         curriculum=curriculum,
         band=band,
         progress_for_topic=progress_for_topic,
+        top_progress=top_progress,
     )
 
     return StyleDirectives(
