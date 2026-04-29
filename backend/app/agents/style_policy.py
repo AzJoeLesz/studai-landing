@@ -430,26 +430,79 @@ def format_directives_block(directives: StyleDirectives) -> str:
     return "\n".join(lines)
 
 
-def should_suppress_grounding(directives: StyleDirectives) -> bool:
-    """Whether to drop the RAG layers (problem bank / OpenStax / annotations)
-    for this turn.
+@dataclass(frozen=True)
+class GroundingSuppression:
+    """Per-block suppression flags computed from directives + guided-mode.
 
-    When the register is non-default the student isn't being TUTORED
-    on this topic -- they're just exploring (above), warming up
-    (below), or being remediated. The retrieved problem-bank items
-    and textbook excerpts are at the LEVEL OF THE TOPIC, not the
-    student. Showing the model a Hendrycks Level-2 quadratic worked
-    solution while telling it "talk to a 4th grader at intuition
-    level only" puts the model in conflict -- it tends to mirror the
-    private context.
-
-    So: when register is above_level_exploration or below_level_warmup,
-    skip the RAG injection. Remedial keeps it (the student SHOULD be
-    learning this topic; we're just slowing down).
+    Phase 10 (Decision K) split the old "all on or all off" flag into
+    per-block decisions because guided mode wants L2 (OpenStax) ON
+    while L1 (problem RAG) and L3 (annotations) become redundant
+    (the verified path IS the structured pedagogy).
     """
-    return directives.register in (
+
+    suppress_l1_problem_rag: bool
+    suppress_l2_openstax: bool
+    suppress_l3_annotations: bool
+    suppress_guided_path: bool
+
+
+def grounding_suppression(
+    directives: StyleDirectives, *, guided_active: bool = False
+) -> GroundingSuppression:
+    """Decide which grounding blocks to drop for this turn.
+
+    Three regimes:
+      * Register is above-level / below-level exploration: drop EVERY
+        grounding block, including any guided-path block. The student
+        isn't being TUTORED on this topic -- they're exploring or
+        warming up. Retrieved problem-bank items and textbook excerpts
+        are at the LEVEL OF THE TOPIC, not the student; showing them
+        puts the model in conflict with the register's intent.
+      * Register is at-level / remedial AND guided mode is active:
+        drop L1 (we already have THE problem) and L3 (we have the
+        structured path) but KEEP L2 (OpenStax). Guided-path block
+        is the centerpiece of the turn.
+      * Otherwise (Phase 9 default at_level / remedial): keep all
+        grounding layers. Guided-path block is N/A.
+    """
+    if directives.register in (
         "above_level_exploration",
         "below_level_warmup",
+    ):
+        return GroundingSuppression(
+            suppress_l1_problem_rag=True,
+            suppress_l2_openstax=True,
+            suppress_l3_annotations=True,
+            suppress_guided_path=True,
+        )
+    if guided_active:
+        return GroundingSuppression(
+            suppress_l1_problem_rag=True,
+            suppress_l2_openstax=False,
+            suppress_l3_annotations=True,
+            suppress_guided_path=False,
+        )
+    return GroundingSuppression(
+        suppress_l1_problem_rag=False,
+        suppress_l2_openstax=False,
+        suppress_l3_annotations=False,
+        suppress_guided_path=False,
+    )
+
+
+def should_suppress_grounding(directives: StyleDirectives) -> bool:
+    """Back-compat: thin wrapper around `grounding_suppression(...)`.
+
+    Returns True when ALL of L1/L2/L3 should be suppressed. This is
+    the question the Phase 9 callers want answered. New callers that
+    need per-block control should call `grounding_suppression`
+    directly with `guided_active`.
+    """
+    sup = grounding_suppression(directives, guided_active=False)
+    return (
+        sup.suppress_l1_problem_rag
+        and sup.suppress_l2_openstax
+        and sup.suppress_l3_annotations
     )
 
 
@@ -508,10 +561,12 @@ def format_session_state_block(state: SessionState | None) -> str | None:
 
 __all__ = [
     "StyleDirectives",
+    "GroundingSuppression",
     "derive_directives",
     "format_directives_block",
     "format_progress_block",
     "format_session_state_block",
+    "grounding_suppression",
     "should_suppress_grounding",
 ]
 

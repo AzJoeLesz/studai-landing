@@ -89,6 +89,10 @@ class Profile(BaseModel):
     notes: str | None = None
     share_progress_with_parents: bool = False
     preferences: dict = Field(default_factory=dict)
+    # Phase 10: gates the /admin/* routes. Default 'student' so existing
+    # rows are unaffected. First admin user is set manually in Supabase
+    # after migration 007 runs.
+    role: str = "student"
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +245,185 @@ class ProblemAnnotationRecord(BaseModel):
     problem_id: UUID
     payload: dict
     model: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: solution graphs
+# ---------------------------------------------------------------------------
+# See docs/phase10_solution_graphs.md for the design rationale and the
+# full Decisions table. Free-text topic strings still apply (Phase 11
+# will introduce the canonical `topics` taxonomy and migrate FKs at
+# that point).
+
+# Provenance of a `solution_paths` row.
+#   * `generator`           — produced by scripts/generate_solution_paths.py
+#                              from problem + solution + OpenStax retrieval.
+#   * `annotation_backfill` — synthesized in 10A from the existing
+#                              `problem_annotations.payload` JSON. Decision
+#                              A (lock): backfill the 205 already-annotated
+#                              rows as path #1 with verified=false.
+PathSource = Literal["generator", "annotation_backfill"]
+
+# Mirrors `guided_problem_sessions.status` enum check.
+GuidedSessionStatus = Literal["active", "completed", "abandoned"]
+
+# Mirrors `profiles.role` enum check.
+ProfileRole = Literal["student", "parent", "teacher", "admin"]
+
+
+class SolutionPath(BaseModel):
+    """A named approach to solving a specific problem.
+
+    1-3 paths per problem (factoring vs quadratic_formula vs graphing).
+    `verified=true` is the runtime gate — only verified paths drive the
+    guided-mode loop. Decision B (lock): no path versioning yet —
+    unique-on-(problem_id, name, language) and overwrite with bumped
+    `model` on regeneration.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    problem_id: UUID
+    name: str
+    rationale: str | None = None
+    preferred: bool = False
+    language: Language = "en"
+    verified: bool = False
+    verified_by: UUID | None = None
+    verified_at: datetime | None = None
+    model: str | None = None
+    critic_score: float | None = None
+    source: PathSource | None = None
+    created_at: datetime | None = None
+
+
+class SolutionPathInsert(BaseModel):
+    """Payload for inserting a new `solution_paths` row."""
+
+    problem_id: UUID
+    name: str
+    rationale: str | None = None
+    preferred: bool = False
+    language: Language = "en"
+    model: str | None = None
+    critic_score: float | None = None
+    source: PathSource | None = None
+
+
+class SolutionStep(BaseModel):
+    """An ordered step inside a path.
+
+    The step evaluator (10B) reads `goal`, `expected_action`, and
+    `expected_state` to classify the student's latest message against
+    the expected next move.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    path_id: UUID
+    step_index: int
+    goal: str
+    expected_action: str | None = None
+    expected_state: str | None = None
+    is_terminal: bool = False
+    created_at: datetime | None = None
+
+
+class SolutionStepInsert(BaseModel):
+    """Payload for inserting a new `solution_steps` row.
+
+    `step_index` is required and must be unique within a path; the
+    generator script assigns it sequentially from 1.
+    """
+
+    path_id: UUID
+    step_index: int
+    goal: str
+    expected_action: str | None = None
+    expected_state: str | None = None
+    is_terminal: bool = False
+
+
+class StepHint(BaseModel):
+    """A graduated hint for a step.
+
+    `hint_index`: 1=gentle, 2=stronger, 3=last hint before the method.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    step_id: UUID
+    hint_index: int
+    body: str
+    created_at: datetime | None = None
+
+
+class StepHintInsert(BaseModel):
+    """Payload for inserting a new `step_hints` row."""
+
+    step_id: UUID
+    hint_index: int
+    body: str
+
+
+class CommonMistake(BaseModel):
+    """A pedagogically-actionable mistake pattern.
+
+    Either step-scoped (preferred — more actionable) or problem-scoped.
+    The step evaluator's `matched_mistake_<id>` output points at one of
+    these rows. `pedagogical_hint` is the response the model uses in
+    spirit (rephrased, never recited verbatim).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    problem_id: UUID | None = None
+    step_id: UUID | None = None
+    pattern: str
+    detection_hint: str | None = None
+    pedagogical_hint: str
+    remediation_topic: str | None = None
+    created_at: datetime | None = None
+
+
+class CommonMistakeInsert(BaseModel):
+    """Payload for inserting a new `common_mistakes` row.
+
+    Exactly one of `problem_id` or `step_id` should be set in practice
+    (the DB constraint allows both, but step-scoped is preferred).
+    """
+
+    problem_id: UUID | None = None
+    step_id: UUID | None = None
+    pattern: str
+    detection_hint: str | None = None
+    pedagogical_hint: str
+    remediation_topic: str | None = None
+
+
+class GuidedProblemSession(BaseModel):
+    """Per-(session, problem) runtime state for guided mode.
+
+    Decision J (lock): while `status == 'active'`, this row is the
+    authoritative source for `session_state.mode = 'problem'` and for
+    `session_state.struggling_on = current_step.goal`. The post-turn
+    extractor MUST defer to the guided system on those two fields.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    session_id: UUID
+    problem_id: UUID
+    active_path_id: UUID | None = None
+    current_step_index: int = 1
+    attempts_on_step: int = 0
+    hints_consumed_on_step: int = 0
+    off_path_count: int = 0
+    status: GuidedSessionStatus = "active"
+    started_at: datetime | None = None
+    updated_at: datetime | None = None

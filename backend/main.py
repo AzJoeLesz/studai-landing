@@ -11,7 +11,7 @@ Run on Railway:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, health, onboarding, problems, sessions
+from app.api import admin, chat, health, onboarding, problems, sessions
 from app.core.config import get_settings
 
 
@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(problems.router)
     app.include_router(onboarding.router)
+    app.include_router(admin.router)
 
     return app
 

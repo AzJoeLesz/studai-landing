@@ -11,7 +11,7 @@ import { ChatInput, type ChatInputHandle } from "@/components/chat/chat-input";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api/config";
-import { streamChat } from "@/lib/api/chat";
+import { streamChat, type GuidedActivePayload } from "@/lib/api/chat";
 import { getSession } from "@/lib/api/sessions";
 import type { Message, TutorSession } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
@@ -60,6 +60,16 @@ export function ChatView({ sessionId }: ChatViewProps) {
   // Retry button knows what to re-send. Cleared after a clean turn.
   const [pendingRetryMessage, setPendingRetryMessage] = useState<string | null>(
     null,
+  );
+  // Phase 10B: when guided mode is active for the currently-streaming
+  // turn, the backend emits a `guided_active` SSE event before any
+  // tokens. We render a small check-icon badge on the streaming bubble,
+  // and once the assistant message is sealed we record its id in
+  // `guidedMessageIds` so the badge persists after scroll.
+  const [streamingGuidedActive, setStreamingGuidedActive] =
+    useState<GuidedActivePayload | null>(null);
+  const [guidedMessageIds, setGuidedMessageIds] = useState<Set<string>>(
+    () => new Set(),
   );
 
   const abortRef = useRef<AbortController | null>(null);
@@ -112,6 +122,7 @@ export function ChatView({ sessionId }: ChatViewProps) {
     setStreamError(null);
     setIsStreaming(true);
     setStreamingContent("");
+    setStreamingGuidedActive(null);
     setPendingRetryMessage(userMessage);
 
     if (addOptimisticUserBubble) {
@@ -130,6 +141,7 @@ export function ChatView({ sessionId }: ChatViewProps) {
 
     let accumulated = "";
     let cleanFinish = false;
+    let guidedForThisTurn: GuidedActivePayload | null = null;
 
     try {
       await streamChat({
@@ -149,6 +161,10 @@ export function ChatView({ sessionId }: ChatViewProps) {
         onDone: () => {
           cleanFinish = true;
         },
+        onGuidedActive: (payload) => {
+          guidedForThisTurn = payload;
+          setStreamingGuidedActive(payload);
+        },
       });
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -159,16 +175,25 @@ export function ChatView({ sessionId }: ChatViewProps) {
     } finally {
       // Convert the streamed content into a sealed assistant message.
       if (accumulated.trim()) {
+        const assistantId = `optimistic-assistant-${Date.now()}`;
         const assistantMessage: Message = {
-          id: `optimistic-assistant-${Date.now()}`,
+          id: assistantId,
           session_id: sessionId,
           role: "assistant",
           content: accumulated,
           created_at: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, assistantMessage]);
+        if (guidedForThisTurn) {
+          setGuidedMessageIds((prev) => {
+            const next = new Set(prev);
+            next.add(assistantId);
+            return next;
+          });
+        }
       }
       setStreamingContent(null);
+      setStreamingGuidedActive(null);
       setIsStreaming(false);
       abortRef.current = null;
       // Only clear the retry handle on a clean done. Mid-stream errors
@@ -251,6 +276,13 @@ export function ChatView({ sessionId }: ChatViewProps) {
   const title = session?.title?.trim() || tSessions("untitled");
   const hasContent = messages.length > 0 || streamingContent !== null;
 
+  // Phase 10B: build the i18n'd badge object once per render so we
+  // don't allocate inside the messages.map.
+  const guidedBadge = {
+    label: t("guidedMode"),
+    tooltip: t("guidedModeTooltip"),
+  };
+
   // Show the Retry button when:
   //   - we have a pending message we tried to send,
   //   - we're not currently in the middle of streaming,
@@ -294,6 +326,11 @@ export function ChatView({ sessionId }: ChatViewProps) {
                   key={m.id}
                   message={m}
                   authorLabel={m.role === "user" ? t("you") : t("tutor")}
+                  guidedModeBadge={
+                    m.role === "assistant" && guidedMessageIds.has(m.id)
+                      ? guidedBadge
+                      : undefined
+                  }
                 />
               ))}
               {streamingContent !== null && (
@@ -301,6 +338,9 @@ export function ChatView({ sessionId }: ChatViewProps) {
                   message={{ role: "assistant", content: streamingContent }}
                   authorLabel={t("tutor")}
                   isStreaming
+                  guidedModeBadge={
+                    streamingGuidedActive ? guidedBadge : undefined
+                  }
                 />
               )}
             </>

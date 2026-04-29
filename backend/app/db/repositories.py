@@ -16,7 +16,11 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.db.schemas import (
+    CommonMistake,
+    CommonMistakeInsert,
     EvidenceSource,
+    GuidedProblemSession,
+    GuidedSessionStatus,
     Language,
     Message,
     PlacementAttempt,
@@ -26,6 +30,12 @@ from app.db.schemas import (
     Profile,
     Role,
     SessionState,
+    SolutionPath,
+    SolutionPathInsert,
+    SolutionStep,
+    SolutionStepInsert,
+    StepHint,
+    StepHintInsert,
     StudentProgress,
     TeachingMaterialHit,
     TutorSession,
@@ -40,7 +50,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _PROFILE_COLUMNS = (
     "id,display_name,age,grade_level,interests,learning_goals,notes,"
-    "share_progress_with_parents,preferences"
+    "share_progress_with_parents,preferences,role"
 )
 
 
@@ -827,3 +837,563 @@ def fetch_problems_for_placement_by_ids(
     if rows:
         return [Problem.model_validate(rows[0])]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: solution graphs
+# ---------------------------------------------------------------------------
+# All four content tables (`solution_paths`, `solution_steps`,
+# `step_hints`, `common_mistakes`) are PUBLIC content -- read by all
+# authenticated users, written only via service_role from the generation
+# script and the /admin/paths endpoints.
+#
+# `guided_problem_sessions` is per-(session, problem) runtime state and
+# is read on every chat turn while a guided session is active.
+# Decision J: this row is the authoritative state-holder for
+# session_state.mode and session_state.struggling_on while active.
+#
+# Topic FKs are deferred to Phase 11; for now `common_mistakes.remediation_topic`
+# is free text. See docs/phase10_solution_graphs.md.
+_SOLUTION_PATH_COLUMNS = (
+    "id,problem_id,name,rationale,preferred,language,verified,"
+    "verified_by,verified_at,model,critic_score,source,created_at"
+)
+_SOLUTION_STEP_COLUMNS = (
+    "id,path_id,step_index,goal,expected_action,expected_state,"
+    "is_terminal,created_at"
+)
+_STEP_HINT_COLUMNS = "id,step_id,hint_index,body,created_at"
+_COMMON_MISTAKE_COLUMNS = (
+    "id,problem_id,step_id,pattern,detection_hint,pedagogical_hint,"
+    "remediation_topic,created_at"
+)
+_GUIDED_SESSION_COLUMNS = (
+    "id,session_id,problem_id,active_path_id,current_step_index,"
+    "attempts_on_step,hints_consumed_on_step,off_path_count,status,"
+    "started_at,updated_at"
+)
+
+
+# --- Generator support: which problems still need paths --------------------
+def list_problems_without_solution_paths(
+    target_language: Language = "en", limit: int = 500
+) -> list[Problem]:
+    """Problems without ANY `solution_paths` row in `target_language`.
+
+    Calls the `problems_without_solution_paths()` Postgres function
+    from migration 007. Server-side LEFT JOIN; same pattern as
+    `list_problems_missing_embedding`.
+    """
+    sb = get_supabase_client()
+    res = sb.rpc(
+        "problems_without_solution_paths",
+        {"target_language": target_language, "max_count": limit},
+    ).execute()
+    return [Problem.model_validate(row) for row in (res.data or [])]
+
+
+def list_annotated_problems_without_solution_paths(
+    target_language: Language = "en", limit: int = 500
+) -> list[Problem]:
+    """Problems with an existing `problem_annotations` row but no
+    `solution_paths` yet. Used by the generator's `--from-annotations`
+    mode to backfill the 205 already-annotated problems with richer
+    input scaffolding (Decision A in docs/phase10_solution_graphs.md).
+    """
+    sb = get_supabase_client()
+    res = sb.rpc(
+        "annotated_problems_without_solution_paths",
+        {"target_language": target_language, "max_count": limit},
+    ).execute()
+    return [Problem.model_validate(row) for row in (res.data or [])]
+
+
+# --- Solution paths --------------------------------------------------------
+def insert_solution_path(row: SolutionPathInsert) -> SolutionPath:
+    """Upsert a single solution path; conflicts on (problem_id, name, language).
+
+    Re-running the generator with the same path name overwrites the
+    existing row (and its `model`/`critic_score`). Cascades from the
+    path delete all child rows (steps, hints, mistakes-via-step).
+    Decision B: no path versioning yet.
+    """
+    sb = get_supabase_client()
+    payload = row.model_dump(exclude_none=True, mode="json")
+    res = (
+        sb.table("solution_paths")
+        .upsert(payload, on_conflict="problem_id,name,language")
+        .execute()
+    )
+    if not res.data:
+        raise RuntimeError("Failed to upsert solution_path")
+    return SolutionPath.model_validate(res.data[0])
+
+
+def get_paths_for_problem(
+    problem_id: UUID,
+    *,
+    language: Language = "en",
+    verified_only: bool = False,
+) -> list[SolutionPath]:
+    """All paths for a problem, ordered with `preferred=true` first.
+
+    `verified_only=True` is the runtime gate (Decision F): only verified
+    paths drive guided mode. The /admin/paths route uses
+    `verified_only=False` to surface unverified content for review.
+    """
+    sb = get_supabase_client()
+    q = (
+        sb.table("solution_paths")
+        .select(_SOLUTION_PATH_COLUMNS)
+        .eq("problem_id", str(problem_id))
+        .eq("language", language)
+    )
+    if verified_only:
+        q = q.eq("verified", True)
+    res = q.execute()
+    rows = res.data or []
+    rows.sort(
+        key=lambda r: (
+            0 if r.get("preferred") else 1,
+            r.get("created_at") or "",
+        )
+    )
+    return [SolutionPath.model_validate(r) for r in rows]
+
+
+def get_solution_path(path_id: UUID) -> SolutionPath | None:
+    sb = get_supabase_client()
+    res = (
+        sb.table("solution_paths")
+        .select(_SOLUTION_PATH_COLUMNS)
+        .eq("id", str(path_id))
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return SolutionPath.model_validate(rows[0]) if rows else None
+
+
+def get_problem(problem_id: UUID) -> Problem | None:
+    """Read one problem row by id. Used by /admin/paths and by
+    `agents/guided_mode` (which previously inlined this query).
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("problems")
+        .select(
+            "id,source,type,difficulty,problem_en,solution_en,answer,"
+            "source_id,created_at"
+        )
+        .eq("id", str(problem_id))
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return Problem.model_validate(rows[0]) if rows else None
+
+
+def list_unverified_paths(limit: int = 50) -> list[SolutionPath]:
+    """Verification queue for /admin/paths (legacy non-paginated form).
+
+    Sorted by `critic_score desc nulls last` then `created_at desc` so
+    the LLM-as-judge's high-confidence paths bubble to the top. Phase
+    10C's UI uses `list_admin_paths` instead (paginated + filterable);
+    this function is kept for any non-UI caller that just needs a
+    quick batch.
+    """
+    return list_admin_paths(
+        status_filter="unverified", limit=limit, offset=0
+    )
+
+
+def list_admin_paths(
+    *,
+    status_filter: str = "unverified",
+    limit: int = 25,
+    offset: int = 0,
+) -> list[SolutionPath]:
+    """Paginated + filterable path list for /admin/paths.
+
+    `status_filter` -- "unverified" | "verified" | "all".
+    Same sort as `list_unverified_paths`: critic_score desc nulls
+    last, then created_at desc as a tie-breaker.
+    """
+    sb = get_supabase_client()
+    q = sb.table("solution_paths").select(_SOLUTION_PATH_COLUMNS)
+    if status_filter == "unverified":
+        q = q.eq("verified", False)
+    elif status_filter == "verified":
+        q = q.eq("verified", True)
+    # "all" applies no filter.
+    safe_limit = max(1, min(100, limit))
+    safe_offset = max(0, offset)
+    res = (
+        q.order("critic_score", desc=True, nullsfirst=False)
+        .order("created_at", desc=True)
+        .range(safe_offset, safe_offset + safe_limit - 1)
+        .execute()
+    )
+    return [SolutionPath.model_validate(r) for r in (res.data or [])]
+
+
+def mark_path_verified(
+    path_id: UUID, verified_by: UUID, *, verified: bool = True
+) -> None:
+    """Set `verified` (and `verified_by`/`verified_at`) on a path.
+
+    The /admin/paths route calls this through a backend endpoint; the
+    backend uses the service_role key so RLS is bypassed -- the
+    endpoint itself enforces `profiles.role == 'admin'`.
+    """
+    sb = get_supabase_client()
+    payload: dict = {"verified": verified}
+    if verified:
+        payload["verified_by"] = str(verified_by)
+        payload["verified_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        payload["verified_by"] = None
+        payload["verified_at"] = None
+    sb.table("solution_paths").update(payload).eq(
+        "id", str(path_id)
+    ).execute()
+
+
+def delete_path(path_id: UUID) -> None:
+    """Hard delete a path (cascades to steps, hints, mistakes-via-step).
+
+    Used by the generator's `--overwrite` flag to wipe a stale path
+    before re-inserting fresh rows. Verification UI uses
+    `mark_path_verified(verified=False)` for soft-rejects instead.
+    """
+    sb = get_supabase_client()
+    sb.table("solution_paths").delete().eq("id", str(path_id)).execute()
+
+
+# --- Solution steps --------------------------------------------------------
+def bulk_insert_steps(
+    rows: Iterable[SolutionStepInsert],
+) -> list[SolutionStep]:
+    """Bulk insert ordered steps for one (or several) paths."""
+    payload = [r.model_dump(exclude_none=True, mode="json") for r in rows]
+    if not payload:
+        return []
+    sb = get_supabase_client()
+    res = (
+        sb.table("solution_steps")
+        .upsert(payload, on_conflict="path_id,step_index")
+        .execute()
+    )
+    return [SolutionStep.model_validate(r) for r in (res.data or [])]
+
+
+def get_steps_for_path(path_id: UUID) -> list[SolutionStep]:
+    sb = get_supabase_client()
+    res = (
+        sb.table("solution_steps")
+        .select(_SOLUTION_STEP_COLUMNS)
+        .eq("path_id", str(path_id))
+        .order("step_index")
+        .execute()
+    )
+    return [SolutionStep.model_validate(r) for r in (res.data or [])]
+
+
+# --- Step hints ------------------------------------------------------------
+def bulk_insert_hints(
+    rows: Iterable[StepHintInsert],
+) -> list[StepHint]:
+    payload = [r.model_dump(exclude_none=True, mode="json") for r in rows]
+    if not payload:
+        return []
+    sb = get_supabase_client()
+    res = (
+        sb.table("step_hints")
+        .upsert(payload, on_conflict="step_id,hint_index")
+        .execute()
+    )
+    return [StepHint.model_validate(r) for r in (res.data or [])]
+
+
+def get_hints_for_step(step_id: UUID) -> list[StepHint]:
+    sb = get_supabase_client()
+    res = (
+        sb.table("step_hints")
+        .select(_STEP_HINT_COLUMNS)
+        .eq("step_id", str(step_id))
+        .order("hint_index")
+        .execute()
+    )
+    return [StepHint.model_validate(r) for r in (res.data or [])]
+
+
+def get_hints_for_path(path_id: UUID) -> dict[UUID, list[StepHint]]:
+    """Hints grouped by step_id for an entire path. Single round-trip."""
+    sb = get_supabase_client()
+    step_ids = [str(s.id) for s in get_steps_for_path(path_id)]
+    if not step_ids:
+        return {}
+    res = (
+        sb.table("step_hints")
+        .select(_STEP_HINT_COLUMNS)
+        .in_("step_id", step_ids)
+        .order("hint_index")
+        .execute()
+    )
+    out: dict[UUID, list[StepHint]] = {}
+    for r in res.data or []:
+        h = StepHint.model_validate(r)
+        out.setdefault(h.step_id, []).append(h)
+    return out
+
+
+# --- Common mistakes -------------------------------------------------------
+def bulk_insert_mistakes(
+    rows: Iterable[CommonMistakeInsert],
+) -> list[CommonMistake]:
+    """Bulk insert mistake rows.
+
+    No upsert: `common_mistakes` has no natural unique key (the same
+    pattern can plausibly attach to multiple steps). Re-running the
+    generator with `--overwrite` first deletes the parent path, which
+    cascades to step-scoped mistakes.
+    """
+    payload = [r.model_dump(exclude_none=True, mode="json") for r in rows]
+    if not payload:
+        return []
+    sb = get_supabase_client()
+    res = sb.table("common_mistakes").insert(payload).execute()
+    return [CommonMistake.model_validate(r) for r in (res.data or [])]
+
+
+def get_mistakes_for_step(step_id: UUID) -> list[CommonMistake]:
+    sb = get_supabase_client()
+    res = (
+        sb.table("common_mistakes")
+        .select(_COMMON_MISTAKE_COLUMNS)
+        .eq("step_id", str(step_id))
+        .execute()
+    )
+    return [CommonMistake.model_validate(r) for r in (res.data or [])]
+
+
+def get_mistakes_for_problem_only(
+    problem_id: UUID,
+) -> list[CommonMistake]:
+    """Just the problem-scoped mistake rows (NOT the union with
+    step-scoped). Used by /admin/paths so the detail view can show
+    "this mistake spans the whole problem" separately from
+    "this mistake is tied to step N".
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("common_mistakes")
+        .select(_COMMON_MISTAKE_COLUMNS)
+        .eq("problem_id", str(problem_id))
+        .execute()
+    )
+    return [CommonMistake.model_validate(r) for r in (res.data or [])]
+
+
+def get_mistakes_for_problem(problem_id: UUID) -> list[CommonMistake]:
+    """Both step-scoped (via the problem's paths' steps) and problem-scoped
+    mistake rows. The step evaluator (10B) needs the union -- the
+    student may match a mistake that's attached to a step we haven't
+    even reached yet (e.g. they jumped ahead).
+    """
+    sb = get_supabase_client()
+    # Per-problem direct hits.
+    direct = (
+        sb.table("common_mistakes")
+        .select(_COMMON_MISTAKE_COLUMNS)
+        .eq("problem_id", str(problem_id))
+        .execute()
+        .data
+        or []
+    )
+    # Per-step hits across all paths for this problem. Two queries beats
+    # a complex join; supabase-py doesn't expose the latter cleanly.
+    paths = (
+        sb.table("solution_paths")
+        .select("id")
+        .eq("problem_id", str(problem_id))
+        .execute()
+        .data
+        or []
+    )
+    if not paths:
+        return [CommonMistake.model_validate(r) for r in direct]
+    path_ids = [p["id"] for p in paths]
+    steps = (
+        sb.table("solution_steps")
+        .select("id")
+        .in_("path_id", path_ids)
+        .execute()
+        .data
+        or []
+    )
+    if not steps:
+        return [CommonMistake.model_validate(r) for r in direct]
+    step_ids = [s["id"] for s in steps]
+    via_steps = (
+        sb.table("common_mistakes")
+        .select(_COMMON_MISTAKE_COLUMNS)
+        .in_("step_id", step_ids)
+        .execute()
+        .data
+        or []
+    )
+    seen: set[str] = set()
+    out: list[CommonMistake] = []
+    for r in direct + via_steps:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        out.append(CommonMistake.model_validate(r))
+    return out
+
+
+# --- Guided problem sessions (runtime state) -------------------------------
+class _Unset:
+    """Sentinel: distinguishes 'leave alone' from 'set to None' in
+    `update_guided_session.active_path_id`. The argument default is
+    `_UNSET`; callers either omit the arg (leave alone), pass `None`
+    (explicit clear), or pass a UUID (set).
+    """
+
+
+_UNSET = _Unset()
+
+
+def get_active_guided_session(
+    session_id: UUID,
+) -> GuidedProblemSession | None:
+    """The single active guided session for this tutor session, if any.
+
+    Decision J: if this returns non-None, the post-turn extractor MUST
+    skip writing `mode` and `struggling_on` to `session_state`. Read
+    on every chat turn; the partial index `guided_problem_sessions_active_idx`
+    keeps it cheap.
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("guided_problem_sessions")
+        .select(_GUIDED_SESSION_COLUMNS)
+        .eq("session_id", str(session_id))
+        .eq("status", "active")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return GuidedProblemSession.model_validate(rows[0]) if rows else None
+
+
+def get_or_start_guided_session(
+    *,
+    session_id: UUID,
+    problem_id: UUID,
+    active_path_id: UUID | None,
+) -> GuidedProblemSession:
+    """Find-or-create the (session, problem) row and return it.
+
+    Existing rows are returned untouched -- their counters keep their
+    state across chat turns. The `unique(session_id, problem_id)`
+    constraint makes this safe under retry. If the existing row is
+    `completed` or `abandoned`, we reactivate it (set status='active'
+    and reset the per-step counters) -- the student is coming back to
+    a problem they earlier walked away from.
+    """
+    sb = get_supabase_client()
+    existing_res = (
+        sb.table("guided_problem_sessions")
+        .select(_GUIDED_SESSION_COLUMNS)
+        .eq("session_id", str(session_id))
+        .eq("problem_id", str(problem_id))
+        .limit(1)
+        .execute()
+    )
+    rows = existing_res.data or []
+    if rows:
+        row = rows[0]
+        if row["status"] == "active":
+            return GuidedProblemSession.model_validate(row)
+        # Reactivate.
+        upd = (
+            sb.table("guided_problem_sessions")
+            .update(
+                {
+                    "status": "active",
+                    "active_path_id": (
+                        str(active_path_id) if active_path_id else row.get("active_path_id")
+                    ),
+                    "current_step_index": 1,
+                    "attempts_on_step": 0,
+                    "hints_consumed_on_step": 0,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .eq("id", row["id"])
+            .execute()
+        )
+        return GuidedProblemSession.model_validate(
+            (upd.data or [row])[0]
+        )
+
+    # Fresh insert.
+    payload = {
+        "session_id": str(session_id),
+        "problem_id": str(problem_id),
+        "active_path_id": str(active_path_id) if active_path_id else None,
+        "current_step_index": 1,
+        "attempts_on_step": 0,
+        "hints_consumed_on_step": 0,
+        "off_path_count": 0,
+        "status": "active",
+    }
+    res = sb.table("guided_problem_sessions").insert(payload).execute()
+    if not res.data:
+        raise RuntimeError("Failed to start guided_problem_session")
+    return GuidedProblemSession.model_validate(res.data[0])
+
+
+def update_guided_session(
+    guided_id: UUID,
+    *,
+    active_path_id: UUID | None | _Unset = _UNSET,
+    current_step_index: int | None = None,
+    attempts_on_step: int | None = None,
+    hints_consumed_on_step: int | None = None,
+    off_path_count: int | None = None,
+    status: GuidedSessionStatus | None = None,
+) -> None:
+    """Patch any subset of guided-session counters.
+
+    The 10B step-evaluator + state-machine layer does the math (decide
+    whether to bump current_step_index, reset attempts, etc.); this
+    function just persists the result. `active_path_id` uses `_UNSET`
+    as its default so callers can distinguish "leave alone" (omit
+    arg) from "explicitly clear" (pass None).
+    """
+    payload: dict = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if not isinstance(active_path_id, _Unset):
+        payload["active_path_id"] = (
+            str(active_path_id) if active_path_id is not None else None
+        )
+    if current_step_index is not None:
+        payload["current_step_index"] = current_step_index
+    if attempts_on_step is not None:
+        payload["attempts_on_step"] = attempts_on_step
+    if hints_consumed_on_step is not None:
+        payload["hints_consumed_on_step"] = hints_consumed_on_step
+    if off_path_count is not None:
+        payload["off_path_count"] = off_path_count
+    if status is not None:
+        payload["status"] = status
+
+    sb = get_supabase_client()
+    sb.table("guided_problem_sessions").update(payload).eq(
+        "id", str(guided_id)
+    ).execute()

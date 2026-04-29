@@ -5,6 +5,10 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
  * Thin streaming-chat client.
  *
  * The backend sends Server-Sent Events with these event names:
+ *   - "guided_active" — Phase 10B: emitted at the START of a turn when
+ *                       guided mode is active. JSON payload (see
+ *                       GuidedActivePayload). The frontend renders a
+ *                       small badge on the next assistant bubble.
  *   - "token"  — a chunk of the assistant reply (concat them in order)
  *   - "title"  — auto-generated session title (only on the first turn)
  *   - "done"   — clean end of stream
@@ -15,11 +19,31 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
  * response body manually with a stream reader and parse SSE frames.
  */
 
+/**
+ * Phase 10B `guided_active` SSE payload, mirrored from
+ * `agents/tutor.py::run_tutor_turn`. Keep this shape in sync with the
+ * backend dict serialization there.
+ */
+export interface GuidedActivePayload {
+  active: boolean;
+  path_name: string;
+  current_step: number;
+  total_steps: number;
+  is_activation_turn: boolean;
+}
+
 export interface StreamChatHandlers {
   onToken: (token: string) => void;
   onTitle?: (title: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
+  /**
+   * Called once per turn when guided mode applies, BEFORE the first
+   * token streams. Use to render the small "guided mode" badge on
+   * the assistant bubble. When undefined, the event is silently
+   * ignored — the chat works fine either way.
+   */
+  onGuidedActive?: (payload: GuidedActivePayload) => void;
 }
 
 interface StreamChatOptions extends StreamChatHandlers {
@@ -36,6 +60,7 @@ export async function streamChat({
   onTitle,
   onDone,
   onError,
+  onGuidedActive,
 }: StreamChatOptions): Promise<void> {
   if (!BACKEND_URL) {
     throw new ApiError(0, "ConfigError", "NEXT_PUBLIC_BACKEND_URL is not set");
@@ -85,7 +110,13 @@ export async function streamChat({
       while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
         const rawFrame = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + 2);
-        dispatchFrame(rawFrame, { onToken, onTitle, onDone, onError });
+        dispatchFrame(rawFrame, {
+          onToken,
+          onTitle,
+          onDone,
+          onError,
+          onGuidedActive,
+        });
       }
     }
   } finally {
@@ -121,6 +152,16 @@ function dispatchFrame(
       break;
     case "error":
       handlers.onError?.(data);
+      break;
+    case "guided_active":
+      if (handlers.onGuidedActive) {
+        try {
+          const parsed = JSON.parse(data) as GuidedActivePayload;
+          handlers.onGuidedActive(parsed);
+        } catch {
+          // Malformed payload — ignore; guided badge just won't show.
+        }
+      }
       break;
     default:
       // Unknown event — ignore for forward compatibility.

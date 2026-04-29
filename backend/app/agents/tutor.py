@@ -16,11 +16,14 @@ Design rules for this file:
 """
 
 import asyncio
+import json
 import logging
-from typing import AsyncIterator
+from dataclasses import dataclass
+from typing import AsyncIterator, Literal
 from uuid import UUID
 
-from app.agents import state_updater, style_policy
+from app.agents import guided_mode, state_updater, style_policy
+from app.agents.guided_mode import GuidedTurnContext
 from app.agents.retrieval import GroundingContext, build_grounding_context
 from app.agents.topic_classifier import classify_topic
 from app.core.config import get_settings
@@ -36,6 +39,37 @@ from app.llm import get_llm_client
 from app.prompts import CURRENT_TUTOR_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Typed stream events (Phase 10B)
+# ---------------------------------------------------------------------------
+# `run_tutor_turn` used to yield bare strings (each LLM token). Phase 10
+# needs to communicate side-channel signals to the frontend -- e.g.
+# "this turn entered guided mode" so a small badge can render. We model
+# that as a discriminated dataclass instead of overloading the string
+# protocol with magic markers.
+#
+# `chat.py` translates each TutorEvent to an SSE frame; the frontend
+# matches on `event:` to decide what to do with each.
+TutorEventKind = Literal["token", "meta"]
+
+
+@dataclass(frozen=True)
+class TutorEvent:
+    """One frame on the wire from `run_tutor_turn` to `chat.py`.
+
+    * `kind="token"`  -> `payload` is a chunk of the assistant's reply.
+    * `kind="meta"`   -> `name` is the meta event name
+                          (e.g. "guided_active"); `payload` is its
+                          JSON-serialized data (e.g. '{"path":"factoring"}').
+                          chat.py emits these as their own SSE event types
+                          so the frontend can subscribe specifically.
+    """
+
+    kind: TutorEventKind
+    payload: str
+    name: str = ""
 
 # ---------------------------------------------------------------------------
 # Answer-leak guard
@@ -161,6 +195,7 @@ def _build_context(
     progress: list[StudentProgress] | None,
     grounding: GroundingContext | None = None,
     live_topic: str | None = None,
+    guided_ctx: GuidedTurnContext | None = None,
 ) -> list[MessageInput]:
     """Assemble the message list we send to the LLM.
 
@@ -172,13 +207,13 @@ def _build_context(
       2. Profile snippet
       3. Student progress (Phase 9A/9D)
       4. Session state (Phase 9A)
-      5. Grounding L1 (problem RAG)        -- skipped when register is
-      6. Grounding L2 (OpenStax)              non-default (the textbook
-      7. Grounding L3 (annotations)           material would fight the
-                                              register's intent)
-      8. Style directives + inline recipe  -- LAST system message
-      9. Recent history
-     10. New user turn
+      5. Grounding L1 (problem RAG)        -- per-block suppression now
+      6. Grounding L2 (OpenStax)              decided by `grounding_suppression`
+      7. Grounding L3 (annotations)           (Phase 10 Decision K).
+      8. GUIDED PROBLEM PATH (Phase 10B)   -- only when guided is active
+      9. Style directives + inline recipe  -- LAST system message
+     10. Recent history
+     11. New user turn
 
     Why directives last: when a 4th grader explicitly asks "I want to
     do math about parabolas", we need the strict "above-level
@@ -186,15 +221,28 @@ def _build_context(
     instruction in context. Burying it 6000 tokens upstream lets
     gpt-4o-mini get pulled toward the user's framing.
 
-    Why RAG-suppression for non-default registers: the retrieval
-    pipeline finds problems and textbook excerpts at the LEVEL OF THE
-    TOPIC, not the student. Showing the model a Hendrycks Level-2
-    quadratic worked solution while telling it "talk to a 4th grader
-    at intuition level only" puts the model in conflict.
+    Why per-block grounding suppression: above/below-level register
+    suppresses everything (the retrieval pipeline finds problems and
+    textbook excerpts at the LEVEL OF THE TOPIC, not the student;
+    showing them puts the model in conflict). Guided mode suppresses
+    L1 (we already have THE problem) and L3 (we have the structured
+    path) but keeps L2 (textbook definitions still help).
+
+    Why GUIDED PATH between grounding and directives: the guided
+    block carries the most action-relevant SUBSTANCE (which step,
+    what's expected) but STYLE DIRECTIVES still constrain HOW the
+    model speaks. Directives must remain the last system message --
+    Phase 9 fought hard for that ordering and Phase 10 doesn't regress
+    it.
 
     `live_topic` is the topic-classifier's call on the current user
     message. Passing it lets the register check fire on turn 1 of a
     fresh session.
+
+    `guided_ctx` is non-None when guided mode is active for this
+    turn. The orchestrator (`agents/guided_mode.prepare_turn`) has
+    already loaded the path/step/hints/mistakes and run the step
+    evaluator (when applicable) -- this function just consumes it.
     """
     settings = get_settings()
 
@@ -209,9 +257,14 @@ def _build_context(
         if settings.style_policy_enabled
         else None
     )
-    suppress_grounding = (
-        directives is not None
-        and style_policy.should_suppress_grounding(directives)
+    suppression = (
+        style_policy.grounding_suppression(
+            directives, guided_active=guided_ctx is not None
+        )
+        if directives is not None
+        else style_policy.GroundingSuppression(
+            False, False, False, guided_ctx is None
+        )
     )
 
     system_messages: list[MessageInput] = [
@@ -237,17 +290,27 @@ def _build_context(
                 MessageInput(role="system", content=state_block)
             )
 
-    if not suppress_grounding:
-        g = grounding or GroundingContext()
-        for snippet in (
-            g.problem_reference,
-            g.openstax_excerpts,
-            g.teaching_annotations,
-        ):
-            if snippet:
-                system_messages.append(
-                    MessageInput(role="system", content=snippet)
-                )
+    g = grounding or GroundingContext()
+    if g.problem_reference and not suppression.suppress_l1_problem_rag:
+        system_messages.append(
+            MessageInput(role="system", content=g.problem_reference)
+        )
+    if g.openstax_excerpts and not suppression.suppress_l2_openstax:
+        system_messages.append(
+            MessageInput(role="system", content=g.openstax_excerpts)
+        )
+    if g.teaching_annotations and not suppression.suppress_l3_annotations:
+        system_messages.append(
+            MessageInput(role="system", content=g.teaching_annotations)
+        )
+
+    if guided_ctx is not None and not suppression.suppress_guided_path:
+        system_messages.append(
+            MessageInput(
+                role="system",
+                content=guided_mode.format_guided_path_block(guided_ctx),
+            )
+        )
 
     # Directives LAST so they're the freshest system instruction the
     # model sees before the user message.
@@ -293,23 +356,34 @@ async def run_tutor_turn(
     session_id: UUID,
     user_id: UUID,
     user_message: str,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[TutorEvent]:
     """Execute one conversational turn.
 
     Order of operations (important):
       1. Load existing history + profile + session_state + progress +
-         grounding in parallel — all are read-only and feed the LLM
-         context.
+         grounding + topic-classifier in parallel — all are read-only
+         and feed the LLM context.
       2. Persist the user's message. Even if the LLM call fails, we
          don't lose what the student wrote.
-      3. Stream tokens from the LLM, yielding each one to the caller.
-      4. After the stream ends cleanly, persist the assembled assistant
+      3. PHASE 10B: derive directives, then call
+         `guided_mode.prepare_turn(...)`. If guided mode applies, the
+         orchestrator runs the step evaluator (BLOCKING, ~400ms with
+         600ms hard cap), updates the `guided_problem_sessions` row,
+         and returns a fully-loaded `GuidedTurnContext`.
+      4. Yield a `meta` event (`guided_active`) so the frontend can
+         render its small "guided mode" badge -- BEFORE any tokens
+         start streaming so the badge appears alongside the typing
+         indicator, not after the reply is half-written.
+      5. Stream tokens from the LLM, yielding each one to the caller.
+      6. After the stream ends cleanly, persist the assembled assistant
          reply in full.
-      5. Fire two fire-and-forget tasks:
-            a) Answer-leak guard (existing).
-            b) Post-turn state extractor (Phase 9A). Updates
-               `session_state` + `student_progress` from the latest
-               exchange. Zero latency impact on the user-visible stream.
+      7. Fire fire-and-forget tasks:
+            a) Answer-leak guard (Phase 7).
+            b) Post-turn state extractor (Phase 9A). Defers to guided
+               mode for `mode` and `struggling_on` per Decision J --
+               that coordination patch lands in 10D.
+            c) (10D) per-step `step_check` BKT writes when the
+               evaluator marked `on_path_correct`.
     """
     settings = get_settings()
     llm = get_llm_client()
@@ -349,20 +423,59 @@ async def run_tutor_turn(
             repo.append_message, session_id, "user", user_message
         )
 
-    if settings.grounding_debug_log:
-        p = grounding.problem_reference
-        o = grounding.openstax_excerpts
-        a = grounding.teaching_annotations
-        # Style-policy preview (separate from the actual context-build
-        # below) so the log shows what register the directives layer
-        # decided on for this turn -- the single most useful debug
-        # signal when above_level_exploration isn't firing as expected.
-        preview_directives = style_policy.derive_directives(
+    # Phase 10B: derive directives now (cheap, pure) so we know the
+    # register before deciding guided-mode eligibility. The same
+    # directives object is recomputed inside `_build_context` -- we
+    # accept the duplication because making `_build_context` accept
+    # pre-built directives would tangle the call sites for the no-
+    # directives back-compat path. Computation is sub-millisecond.
+    preview_directives = (
+        style_policy.derive_directives(
             profile=profile,
             session_state=session_state,
             top_progress=progress,
             live_topic=topic_classification.topic,
         )
+        if settings.style_policy_enabled
+        else None
+    )
+
+    # Detect "history already contains an assistant reply" -- the
+    # evaluator should NOT run on the very first turn of a session,
+    # because there's nothing to evaluate the student's first message
+    # against (Phase 9's PHASE 1 DIAGNOSTIC owns that turn).
+    history_has_assistant_reply = any(m.role == "assistant" for m in history)
+
+    guided_ctx = await guided_mode.prepare_turn(
+        session_id=session_id,
+        user_message=user_message,
+        register=(preview_directives.register if preview_directives else "at_level"),
+        history_has_assistant_reply=history_has_assistant_reply,
+        top_rag_hit=grounding.top_problem_hit,
+    )
+
+    if settings.grounding_debug_log:
+        p = grounding.problem_reference
+        o = grounding.openstax_excerpts
+        a = grounding.teaching_annotations
+        guided_line = "off"
+        if guided_ctx is not None:
+            outcome_signal = (
+                guided_ctx.evaluator_outcome.signal
+                if guided_ctx.evaluator_outcome is not None
+                else (
+                    "activation"
+                    if guided_ctx.is_activation_turn
+                    else "no_eval"
+                )
+            )
+            guided_line = (
+                f"on path={guided_ctx.path.name} "
+                f"step={guided_ctx.guided.current_step_index}"
+                f"/{len(guided_ctx.steps)} "
+                f"signal={outcome_signal} "
+                f"attempts={guided_ctx.guided.attempts_on_step}"
+            )
         print(
             "tutor_grounding | "
             f"session_id={session_id} | "
@@ -374,12 +487,31 @@ async def run_tutor_turn(
             f"L3_on={bool(a and a.strip())} | "
             f"live_topic={topic_classification.topic or 'none'} "
             f"sim={topic_classification.similarity:.2f} | "
-            f"register={preview_directives.register} "
-            f"vocab={preview_directives.vocabulary_level} "
-            f"step={preview_directives.step_size} | "
+            f"register={preview_directives.register if preview_directives else 'n/a'} "
+            f"vocab={preview_directives.vocabulary_level if preview_directives else 'n/a'} "
+            f"step={preview_directives.step_size if preview_directives else 'n/a'} | "
+            f"guided={guided_line} | "
             f"L1_ids={','.join(grounding.problem_hit_ids) or 'none'} "
             f"L3_annotation_ids={','.join(grounding.annotation_hit_ids) or 'none'}",
             flush=True,
+        )
+
+    # Emit the guided-mode meta event BEFORE any tokens stream so the
+    # frontend's badge can render alongside the typing indicator. Sent
+    # only when guided mode applies this turn -- when off, the
+    # frontend's default "no badge" state is correct.
+    if guided_ctx is not None:
+        meta = {
+            "active": True,
+            "path_name": guided_ctx.path.name,
+            "current_step": guided_ctx.guided.current_step_index,
+            "total_steps": len(guided_ctx.steps),
+            "is_activation_turn": guided_ctx.is_activation_turn,
+        }
+        yield TutorEvent(
+            kind="meta",
+            name="guided_active",
+            payload=json.dumps(meta, ensure_ascii=False),
         )
 
     context = _build_context(
@@ -391,6 +523,7 @@ async def run_tutor_turn(
         progress,
         grounding,
         live_topic=topic_classification.topic,
+        guided_ctx=guided_ctx,
     )
 
     chunks: list[str] = []
@@ -398,7 +531,7 @@ async def run_tutor_turn(
         context, max_tokens=settings.tutor_max_response_tokens
     ):
         chunks.append(token)
-        yield token
+        yield TutorEvent(kind="token", payload=token)
 
     full_reply = "".join(chunks).strip()
     if full_reply:

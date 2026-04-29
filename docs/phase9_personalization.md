@@ -837,4 +837,137 @@ sketch.
 - **Disagreeing with a locked decision?** Flag explicitly in chat,
   decide deliberately, then update this doc rather than just the code.
 
-*Last updated: created during Phase 9 design conversation.*
+### Onboarding iterations #11–#18 (consolidated dump from session 2)
+
+Lost the conversational context between sessions; this dumps everything fixed/added after iteration #10 so the next AI session has continuity.
+
+**#11 — LLM reranker for placement candidates.**
+Semantic search returns top-30 by cosine similarity → some loose matches sneak through (10th-grader "rational expressions" served a wallet/bills problem). Now: fetch top-12 candidates, send to a small LLM with a 3-criterion rubric (genuinely on-topic / band-appropriate / clear wording) → pick best. Falls back to candidate #1 on error or when reranker disabled.
+
+- New: `_rerank_placement_candidates` in `api/onboarding.py`
+- New: `repositories.fetch_problems_for_placement_by_ids` (plural; the singular now delegates to it with `limit=1`)
+- New config: `placement_reranker_enabled` (default `True`), `placement_reranker_model` (default `gpt-4o-mini`)
+- Pool size: `_RERANK_POOL_SIZE = 12`
+- `_load_placement_profile` now returns `(PlacementProfile, band)` so the reranker prompt can name the band
+- Cost: ~$0.0005 per question, ~300-500ms latency
+
+**#12 — Connection robustness (must-fixes after `RemoteProtocolError`).**
+gpt-5-mini's reasoning pause (several seconds before first token) was triggering Railway proxy idle-timeouts mid-stream. Frontend got `RemoteProtocolError: ConnectionTerminated`, no recovery.
+
+- Backend: `api/chat._with_heartbeat()` wraps the SSE byte stream and emits `: keep-alive\n\n` SSE comments every 15s during silence (ignored by clients per spec, keeps TCP warm). Constant: `_HEARTBEAT_INTERVAL_SECONDS = 15.0`.
+- Backend: `tutor.run_tutor_turn` and `tutor._build_context` are now **idempotent on duplicate user messages** — if the most recent message in history already matches the incoming `user_message`, skip the persistence and don't double-add to the LLM context. Lets the frontend safely retry.
+- Frontend: `chat-view.tsx` extracted `startStream(userMessage, { addOptimisticUserBubble })`, added `pendingRetryMessage` state + `handleRetry()` that **first re-fetches the session** (in case the assistant reply landed but we lost the wire — refresh and done) then re-sends if not. New "Retry" button (with rotate-counterclockwise icon) renders next to the error message. New i18n: `chat.retry` ("Retry" / "Újra").
+
+**#13 — MathQA corpus enrichment.**
+Downloaded 37,297 problems from math-qa.github.io (Apache 2.0). Brought corpus from 17,978 → **55,275 problems, 100% embedded**.
+
+- New: `backend/scripts/download_mathqa.py` — downloads ZIP, parses train/dev/test JSON, writes JSONL to `math_problem_example/word_problem/mathqa.jsonl` (gitignored). Idempotent. Uses `urllib.request` + `zipfile` (no Hugging Face SDK; their dataset uses a deprecated loading-script format).
+- Categorizes into `General` (25,275 — algebra word problems, the 9-12 gap), `Physics` (8,821), `Geometry` (2,625), `Counting & Probability` (576).
+- Difficulty all stored as `easy_medium` (MathQA has no per-problem difficulty); maps to both "easy" and "medium" buckets in `corpus_difficulties_for`.
+- Answers extracted from MathQA's `options` string + `correct` letter (regex `r"([a-e])\s*\)\s*([^,]+?)\s*(?:,|$)"`); rationales become `solution_en`. Original options/correct/annotated_formula/linear_formula preserved as `_mathqa_*` namespaced fields (ignored by parser, future-proof).
+- Ingestion path: `python -m scripts.download_mathqa` then `python -m scripts.ingest_problems --source mathqa --embed`. Embedding cost was ~$0.25-0.50 (not the $25 I initially estimated; text-embedding-3-small is much cheaper than I claimed).
+
+**#14 — Placement profile narrowed for 9-12 bands.**
+Iteration #4 had `9-10 → ("hendrycks", "gsm8k")` and `11-12 → ("hendrycks", "openstax")`. Both wrong:
+- `gsm8k` is grade-2-to-8 → showed 10th graders the "Ali has 7 bills of $5..." problem.
+- `openstax` lives in `teaching_material_chunks`, never in `problems` — listing it was misleading.
+
+Fix: 9-10 and 11-12 are now **`("hendrycks",)` only**. K-2/3-5/6-8 still `("gsm8k",)`. Live tutor RAG remains uncapped.
+
+**#15 — Placement-specific similarity threshold.**
+`find_relevant_problems(..., similarity_threshold=0.0)` was accepting every top-30 match no matter how loose. Bumped to **0.35** specifically inside `_pick_topic_relevant_problem`. Live RAG threshold stays at 0.30 (different concern).
+
+**#16 — Centroid enrichment (Tier 0 from earlier conversation).**
+Bare topic names ("division") had weak embedding similarity to real student messages. New file `backend/app/data/topic_descriptions.json` (~55 entries, all canonical English topics) provides richer embedding source text per topic ("division — splitting things into equal groups, sharing equally between people, finding how many groups of one number fit into another. Word problems about distributing, dividing, sharing.").
+
+`topic_classifier._ensure_centroids()` now reads descriptions and embeds them instead of bare topic names. Falls back to bare name when no description exists. Logs `built N centroids (M with enriched descriptions, K falling back)` at startup. **55/61 topics covered** (the 6 misses are minor HU aliases). Cache key remains the canonical English topic name (what we return).
+
+**#17 — `tutor_v3.txt` PHASE 1 detection broadened.**
+Was: "numbers + question mark". Missed cases like *"Find the area of a triangle with vertices at A, B, C"* (no numbers, no `?`) or *"Solve x squared minus four equals zero"* (no `?`). Now lists 5 problem-shape signals (imperative math verbs, scenario+question, words like "homework"/"problem", math notation, structural length). Explicit note that absence of numbers and `?` doesn't mean "not a problem".
+
+**#18 — Separate `answer_guard_model` config.**
+The post-reply leak guard was inheriting `OPENAI_MODEL`, so bumping chat to gpt-5-mini billed gpt-5-mini for a single-token YES/NO check. New `answer_guard_model` setting (default `gpt-4o-mini`). `tutor._check_answer_leak` reads it.
+
+**#19 — OpenAI client timeouts (added after a hang during MathQA embedding).**
+The `openai` Python SDK ships with **no read timeout**. During the MathQA embedding pass, one request wedged indefinitely with no log output — eating 18 minutes of clock time before manual kill. Now:
+- `embeddings/openai_embeddings.py`: `AsyncOpenAI(timeout=60.0, max_retries=3)`
+- `llm/openai_client.py`: `AsyncOpenAI(timeout=120.0, max_retries=3)` — longer because chat reasoning takes time. Streaming bodies aren't subject to read timeout once headers arrive, so legit long generations aren't cut off.
+- Tradeoff: hung request now fails fast with an exception rather than silently hanging. Script crashes on persistent failures; the embedding pipeline is **resumable** via `list_problems_missing_embedding`, so re-running picks up where it stopped.
+
+---
+
+### Current state of the system at end of session 2
+
+**Corpus** (verified via `python -m scripts.check_corpus_state`):
+- `problems`: **55,275** rows, 100% English-embedded
+  - mathqa: 37,297 (General 25,275 + Physics 8,821 + Geometry 2,625 + C&P 576)
+  - hendrycks: 7,500 (Levels 1-5: 564 / 1,348 / 1,592 / 1,690 / 2,304)
+  - gsm8k: 7,473 (all `easy_medium`)
+  - asdiv: 2,305 (placement-blocked)
+  - svamp: 700 (placement-blocked)
+- `teaching_material_chunks`: **6,855**, 100% embedded, 8 OpenStax books (algebra-1, algebra-and-trigonometry-2e, contemporary-mathematics, elementary-algebra-2e, high-school-statistics, intermediate-algebra-2e, prealgebra-2e, precalculus-2e)
+- `problem_annotations`: 205 (sparse — 1.1% L3 coverage)
+
+**Uncommitted files** (everything still in working tree, NOT committed):
+- `backend/app/agents/grade_priors.py` — placement profile narrowed to hendrycks only for 9-10 / 11-12
+- `backend/app/agents/topic_classifier.py` — uses `topic_descriptions.json`
+- `backend/app/agents/tutor.py` — idempotent persistence + context dedup, answer-guard separate model
+- `backend/app/agents/style_policy.py` — inline vocab recipes for `concrete-everyday` (iter #9), inline register recipes (iter #6)
+- `backend/app/api/chat.py` — `_with_heartbeat` SSE wrapper
+- `backend/app/api/onboarding.py` — placement reranker, similarity floor 0.35, profile-with-band loader
+- `backend/app/core/config.py` — `placement_reranker_enabled`/`placement_reranker_model`/`answer_guard_model`/`tutor_reasoning_effort`/`topic_classifier_confidence_floor`
+- `backend/app/db/repositories.py` — `fetch_problems_for_placement_by_ids` (plural, list-returning)
+- `backend/app/embeddings/openai_embeddings.py` — `timeout=60`, `max_retries=3`
+- `backend/app/llm/openai_client.py` — `timeout=120`, `max_retries=3`, plus the iter #7 `max_completion_tokens` / `reasoning_effort` routing
+- `backend/app/prompts/tutor_v3.txt` — PHASE 1 broadened (iter #17), inline strict recipes (iter #6/#9), diagnostic-first (iter #10)
+- `backend/app/data/topic_descriptions.json` — NEW, centroid enrichment
+- `backend/scripts/download_mathqa.py` — NEW
+- `backend/scripts/check_corpus_state.py` — NEW (read-only DB inspector)
+- `components/chat/chat-view.tsx` — Retry button + `pendingRetryMessage` flow
+- `messages/{en,hu}.json` — `chat.retry` strings
+- `docs/phase9_personalization.md` — this file
+
+**Gitignored, also created:**
+- `math_problem_example/word_problem/mathqa.jsonl` — the 37k MathQA problems (already ingested + embedded into Supabase)
+
+**Env knobs added across all iterations:**
+- `OPENAI_MODEL` — try `gpt-5-mini` (default `gpt-4o-mini`)
+- `OPENAI_TITLE_MODEL`, `STATE_EXTRACTOR_MODEL`, `PLACEMENT_JUDGE_MODEL`, `PLACEMENT_RERANKER_MODEL`, `ANSWER_GUARD_MODEL` — all default `gpt-4o-mini`, swap independently
+- `TUTOR_REASONING_EFFORT` — default `minimal` (for gpt-5/o-series)
+- `TUTOR_MAX_RESPONSE_TOKENS` — default `2000`
+- `PLACEMENT_RERANKER_ENABLED` — default `true`
+- `TOPIC_CLASSIFIER_CONFIDENCE_FLOOR` — default `0.40`
+- `GROUNDING_DEBUG_LOG` — default `false`; flip on Railway to see `tutor_grounding | … live_topic=… sim=… register=… vocab=… step=…` per turn
+
+**Test plan before user commits this batch:**
+1. Redeploy backend (no DB migration needed; `006` already applied per session-1 doc).
+2. Frontend hot-reloads on Vercel.
+3. **10th-grader placement** as a fresh signup: should serve hendrycks Algebra/Intermediate Algebra / mathqa General problems via the reranker. NOT gsm8k word problems. Topic labels should match content (no more wallet/bills under "rational expressions").
+4. **4th-grader placement**: still gsm8k-only.
+5. **4th-grader chat asks about parabolas**: should get above-level register, no equations with variables, refuse problem requests with the canned redirect.
+6. **4th-grader chat asks chocolate-bar division**: should classify as "division" (sim ≥ 0.5 thanks to enriched centroid), at-level register, do PHASE 1 diagnostic ("How would you start?") instead of spoon-feeding "what's 350/80?".
+7. **Connection drop**: kill the chat tab mid-stream; reopen → reload session shows the (possibly persisted) reply, otherwise Retry button works without duplicating the user message.
+8. **Empty replies on gpt-5-mini**: should not happen anymore since `reasoning_effort=minimal` + `max_completion_tokens=2000`. If they do, Railway log shows `tutor: empty assistant reply | model=… | …`.
+
+**Known-deferred items (when relevant):**
+- `session_state.problem_started_at_turn` for deterministic PHASE 1/2 detection (currently LLM-inferred from prompt criteria)
+- Alias-fold extractor topic on write (currently lowercased only; reads through `canonicalize_topic` which folds, so harmless)
+- AQuA-RAT next-priority dataset (~100k problems, ~$1 to embed). Same `scripts/download_aqua_rat.py` + ingest pattern. User asked about it; I haven't done it.
+- MATH-401 for L3 annotation enrichment (gold-standard step-by-step rationales for hard MATH problems)
+- More annotations: only 205/55,275 = 0.4% L3 coverage. Run `python -m scripts.annotate_problems --limit 500` (or higher) to grow.
+- Hungarian content gap: ~zero coverage. Phase 11 will partially address; stopgap is `translate_problems` script for HU subset of gsm8k/MathQA.
+- Eval harness fixtures for the iteration #6/#9/#10 cases (4th-grader-vs-10th-grader divergence, anxious-vs-curious affect, parabolas-refusal, chocolate-bar diagnostic). None written yet.
+
+**Cost notes (so the next session has reference):**
+- Chat (gpt-5-mini, 5k input + 500 output, reasoning_effort=minimal): ~$0.002/turn
+- Chat (gpt-4o-mini): ~$0.001/turn
+- Per-turn auxiliary (extractor + answer guard): ~$0.0003 each
+- Per-placement-question (judge + reranker): ~$0.001 each, +1 embed call (negligible)
+- Whole-corpus re-embed: ~$0.50 at text-embedding-3-small rates
+
+**Hang story for context:**
+- Session-2 hit a hard hang during MathQA embedding pass at 13,500/37,297 (no log progression for ~5 min, CPU flat). Killed PID 23064 manually. Restarted with `python -m scripts.ingest_problems --embed` (no source filter; the script re-upserts everything idempotently then `embed_missing` only embeds rows lacking embeddings). Resumed cleanly, completed in another 17 minutes. Coverage now 55,275/55,275 = 100%. Iteration #19 (timeout fix) prevents this silent-hang failure mode in the future.
+
+---
+
+*Last updated: end of session 2 (Apr 28, 2026 evening) — iterations #11-#19 plus MathQA ingestion. Next session: read this section first, then run the 10th-grader test plan above. If it works, commit the whole batch. If not, the recently-failing surfaces are listed in the test plan with what to look for.*

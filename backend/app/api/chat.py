@@ -7,6 +7,13 @@ Wire format: Server-Sent Events (SSE). Each frame looks like:
     <blank line>
 
 Events this endpoint emits, in order:
+  * `guided_active` (0 or 1) — emitted at the START of a turn when
+                                Phase 10B's guided mode is active. JSON
+                                payload: `{"active": true, "path_name":
+                                "...", "current_step": N, "total_steps":
+                                M, "is_activation_turn": bool}`. The
+                                frontend renders a small badge on the
+                                next assistant bubble.
   * `token` (many)  — chunks of the assistant's reply as they arrive
   * `title` (0 or 1) — only sent on the first turn of a session
   * `done`  (1)     — signals clean end of stream
@@ -114,8 +121,14 @@ async def _chat_stream(
     is_first_turn: bool,
 ) -> AsyncIterator[bytes]:
     try:
-        async for token in run_tutor_turn(session_id, user_id, user_message):
-            yield _sse_frame("token", token)
+        async for evt in run_tutor_turn(session_id, user_id, user_message):
+            if evt.kind == "meta":
+                # Phase 10B: side-channel signals (currently:
+                # `guided_active`). The frontend matches on `event:`
+                # name to handle each meta type independently.
+                yield _sse_frame(evt.name or "meta", evt.payload)
+            else:
+                yield _sse_frame("token", evt.payload)
 
         if is_first_turn:
             try:

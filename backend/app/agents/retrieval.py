@@ -27,13 +27,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class GroundingContext:
-    """Optional system snippets to append after profile (in this order)."""
+    """Optional system snippets to append after profile (in this order).
+
+    `top_problem_hit` is the highest-similarity result from
+    `find_relevant_problems` for THIS turn's user message (or None if
+    there were no hits above threshold). Phase 10B's `guided_mode`
+    uses it to decide whether to activate guided mode -- we already
+    paid for the embedding + search in this layer; passing the result
+    through avoids a second round-trip.
+    """
 
     problem_reference: str | None = None
     openstax_excerpts: str | None = None
     teaching_annotations: str | None = None
     problem_hit_ids: tuple[str, ...] = ()
     annotation_hit_ids: tuple[str, ...] = ()
+    top_problem_hit: "ProblemSearchResult | None" = None
 
 
 # --- Problem bank -------------------------------------------------------------
@@ -282,5 +291,6 @@ async def build_grounding_context(user_message: str, language: Language) -> Grou
         teaching_annotations=ann_text,
         problem_hit_ids=tuple(str(h.id) for h in prob_hits),
         annotation_hit_ids=tuple(str(problem_id) for problem_id in annotated_ids),
+        top_problem_hit=prob_hits[0] if prob_hits else None,
     )
 

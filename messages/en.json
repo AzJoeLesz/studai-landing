@@ -66,7 +66,9 @@
     "emptyTitle": "Let's talk",
     "emptyDescription": "Ask anything about math — algebra, geometry, functions, anything.",
     "you": "You",
-    "tutor": "StudAI"
+    "tutor": "StudAI",
+    "guidedMode": "guided mode",
+    "guidedModeTooltip": "This is a verified problem with a structured solution path."
   },
   "settings": {
     "title": "Settings",
@@ -192,5 +194,50 @@
     "label": "Language",
     "hu": "Hungarian",
     "en": "English"
+  },
+  "admin": {
+    "title": "Admin",
+    "backToDashboard": "Back to dashboard",
+    "paths": {
+      "queueTitle": "Verification queue",
+      "queueEmpty": "Nothing to verify in this view.",
+      "loading": "Loading...",
+      "listError": "Could not load the queue.",
+      "detailError": "Could not load this path.",
+      "verifyError": "Could not approve.",
+      "rejectError": "Could not reject.",
+      "selectPrompt": "Select a path on the left to review.",
+      "filter": {
+        "unverified": "Unverified",
+        "verified": "Verified",
+        "all": "All"
+      },
+      "preferred": "preferred",
+      "verified": "verified",
+      "approve": "Approve",
+      "reject": "Reject",
+      "refresh": "Refresh",
+      "prev": "Prev",
+      "next": "Next",
+      "paginationRange": "{start}–{end}",
+      "source": "Source",
+      "model": "Model",
+      "problemTypeLabel": "Problem type",
+      "problemHeading": "Problem",
+      "workedSolutionHeading": "Verified worked solution",
+      "answerHeading": "Final answer",
+      "problemMistakesHeading": "Problem-scoped mistakes",
+      "stepsHeading": "Steps ({count})",
+      "noSteps": "No steps stored for this path.",
+      "stepLabel": "Step {index}",
+      "terminal": "terminal",
+      "expectedActionLabel": "Expected action",
+      "expectedStateLabel": "Expected state",
+      "hintsHeading": "Step hints",
+      "mistakesHeading": "Common mistakes",
+      "detectionLabel": "Detection",
+      "pedagogicalHintLabel": "Pedagogical hint",
+      "remediationLabel": "Remediation topic"
+    }
   }
 }

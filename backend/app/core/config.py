@@ -114,6 +114,76 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Phase 10: solution graphs -----------------------------------------
+    # See docs/phase10_solution_graphs.md for the full design rationale.
+    # Generation is offline (scripts/generate_solution_paths.py) and the
+    # step evaluator is a per-turn pre-LLM call (10B). All four knobs
+    # default to safe values; override via env in production only when
+    # quality demands it.
+    path_gen_model: str = Field(
+        default="gpt-5-mini",
+        description=(
+            "Model used by `scripts/generate_solution_paths.py` to "
+            "produce solution paths + step hints + common mistakes. "
+            "Decision H (lock): gpt-5-mini for quality on long "
+            "structured-JSON output (~2000 tokens out per problem). "
+            "Cost is rounding noise (~$20 for 500-700 problems). "
+            "Downgrade to gpt-4o-mini if outputs disappoint at scale."
+        ),
+    )
+    path_critic_model: str = Field(
+        default="gpt-5",
+        description=(
+            "Model used by the LLM-as-judge pre-filter that scores "
+            "every generated path on (correctness, hint quality, "
+            "mistake plausibility, step granularity) before it hits "
+            "the human verification queue. Decision N (lock): use a "
+            "STRONGER model than the generator so the critic can "
+            "actually catch generator errors. ~$0.01/path => "
+            "~$5-10 for 500-700 problems."
+        ),
+    )
+    step_evaluator_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Model used by the per-turn step evaluator (Phase 10B). "
+            "BLOCKING pre-LLM call (Decision D): classifies the "
+            "student's latest message vs. the current step's "
+            "expected_action. Hard-clamped by `step_evaluator_timeout_ms`. "
+            "Cheap model is fine -- the task is short JSON output."
+        ),
+    )
+    step_evaluator_timeout_ms: int = Field(
+        default=600,
+        description=(
+            "Hard timeout on the step evaluator LLM call, in ms. On "
+            "timeout we degrade gracefully -- the main LLM runs "
+            "without an evaluator signal (Phase 10's GUIDED PATH "
+            "block falls back to its 'no_step_yet' template). 600ms "
+            "keeps the worst-case TTFT regression bounded."
+        ),
+    )
+    guided_mode_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for Phase 10 guided mode. Off = act "
+            "exactly like Phase 9 (no eligibility check, no "
+            "evaluator, no GUIDED PATH block). Useful for A/B "
+            "testing v3-only vs v3+guided once Phase 12 ratings exist."
+        ),
+    )
+    guided_mode_similarity_threshold: float = Field(
+        default=0.85,
+        description=(
+            "Cosine-similarity floor on the top RAG hit for a new "
+            "guided-mode activation. Decision F (lock): 0.85 (vs "
+            "Phase 9's RAG threshold of 0.55). High precision "
+            "matters more than recall here -- a wrong activation "
+            "on a problem we don't have a real verified path for "
+            "would be worse than no activation at all."
+        ),
+    )
+
     # --- Tutor behavior -----------------------------------------------------
     tutor_max_history_messages: int = Field(
         default=20,

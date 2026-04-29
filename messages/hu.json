@@ -66,7 +66,9 @@
     "emptyTitle": "Beszélgessünk",
     "emptyDescription": "Kérdezz bármit a matekról — algebra, geometria, függvények, bármi.",
     "you": "Te",
-    "tutor": "StudAI"
+    "tutor": "StudAI",
+    "guidedMode": "vezetett mód",
+    "guidedModeTooltip": "Ez egy ellenőrzött feladat, lépésről lépésre vezetlek a megoldás során."
   },
   "settings": {
     "title": "Beállítások",
@@ -192,5 +194,50 @@
     "label": "Nyelv",
     "hu": "Magyar",
     "en": "Angol"
+  },
+  "admin": {
+    "title": "Adminisztráció",
+    "backToDashboard": "Vissza az irányítópultra",
+    "paths": {
+      "queueTitle": "Ellenőrzési sor",
+      "queueEmpty": "Nincs ellenőrzendő elem ebben a nézetben.",
+      "loading": "Betöltés...",
+      "listError": "Nem sikerült betölteni a sort.",
+      "detailError": "Nem sikerült betölteni ezt a megoldási utat.",
+      "verifyError": "Nem sikerült jóváhagyni.",
+      "rejectError": "Nem sikerült elutasítani.",
+      "selectPrompt": "Válassz egy megoldási utat a bal oldali listából.",
+      "filter": {
+        "unverified": "Ellenőrizetlen",
+        "verified": "Ellenőrzött",
+        "all": "Mind"
+      },
+      "preferred": "alapértelmezett",
+      "verified": "ellenőrzött",
+      "approve": "Jóváhagy",
+      "reject": "Elutasít",
+      "refresh": "Frissítés",
+      "prev": "Előző",
+      "next": "Következő",
+      "paginationRange": "{start}–{end}",
+      "source": "Forrás",
+      "model": "Modell",
+      "problemTypeLabel": "Feladat típusa",
+      "problemHeading": "Feladat",
+      "workedSolutionHeading": "Ellenőrzött kidolgozott megoldás",
+      "answerHeading": "Végeredmény",
+      "problemMistakesHeading": "Feladatszintű gyakori hibák",
+      "stepsHeading": "Lépések ({count})",
+      "noSteps": "Ehhez a megoldási úthoz nincsenek tárolt lépések.",
+      "stepLabel": "{index}. lépés",
+      "terminal": "végső",
+      "expectedActionLabel": "Várt művelet",
+      "expectedStateLabel": "Várt állapot",
+      "hintsHeading": "Lépés-tippek",
+      "mistakesHeading": "Gyakori hibák",
+      "detectionLabel": "Felismerés",
+      "pedagogicalHintLabel": "Pedagógiai tipp",
+      "remediationLabel": "Kapcsolódó téma"
+    }
   }
 }
